@@ -67,6 +67,24 @@ export async function checkSajuCubeUser(phone: string): Promise<UserCheckResult>
 }
 
 /**
+ * 특정 사용자가 생성한 persons 목록 조회
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function fetchPersonsByUser(phone: string): Promise<any[]> {
+  try {
+    const res = await fetch(`${API_BASE}/persons`, {
+      headers: { ...AUTH_HEADERS, 'X-User-Id': phone },
+    })
+    if (!res.ok) return []
+    const json = await res.json()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (json.data ?? []).filter((p: any) => p.createdBy === phone)
+  } catch {
+    return []
+  }
+}
+
+/**
  * MinimalPersonData 1건을 saju-cube Edge Function으로 저장
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

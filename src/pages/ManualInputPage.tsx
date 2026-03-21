@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { calculateAutoDates } from '@/utils/dateCalculation'
 import { convertRecord, type ChasamRecord } from '@/utils/chasamConverter'
 import { sydtoso24yd, ganji } from '@/utils/calculationModule'
-import { postPerson } from '@/utils/sajuCubeAuth'
+import { postPerson, fetchPersonsByUser } from '@/utils/sajuCubeAuth'
 import UserIdInput from '@/components/UserIdInput'
 
 function timeToSijin(timeStr: string): { label: string; hourValue: number } | null {
@@ -39,11 +39,14 @@ export default function ManualInputPage() {
   const [memo, setMemo] = useState('')
   const [createdBy, setCreatedBy] = useState('')
   const [createdByNickname, setCreatedByNickname] = useState('')
+  const [isUserVerified, setIsUserVerified] = useState(false)
 
   const [calcError, setCalcError] = useState<string | null>(null)
   const [autoDates, setAutoDates] = useState<AutoDate[] | null>(null)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [dupInfo, setDupInfo] = useState<{ id: string; name: string; birthDate: string }[] | null>(null)
+  const [pendingPayload, setPendingPayload] = useState<Record<string, unknown> | null>(null)
 
   function handleCalc() {
     setCalcError(null); setAutoDates(null)
@@ -57,9 +60,21 @@ export default function ManualInputPage() {
     setAutoDates(result.dates)
   }
 
+  async function doSave(payload: Record<string, unknown>) {
+    setSaveStatus('saving'); setSaveError(null)
+    try {
+      const ok = await postPerson(payload)
+      if (!ok) { setSaveStatus('error'); setSaveError('서버 저장 실패. 서버 응답을 확인해주세요.'); return }
+      setSaveStatus('success')
+    } catch (e) {
+      setSaveStatus('error')
+      setSaveError(e instanceof Error ? e.message : '저장 실패')
+    }
+  }
+
   async function handleSave() {
     if (!name.trim() || !createdBy) return
-    setSaveStatus('saving'); setSaveError(null)
+    setSaveError(null)
     const y = parseInt(year), m = parseInt(month), d = parseInt(day)
     if (!y || !m || !d) { setSaveStatus('error'); setSaveError('생년월일을 입력해주세요'); return }
 
@@ -109,14 +124,30 @@ export default function ManualInputPage() {
       referenceLinks: [] as string[],
     }
 
-    try {
-      const ok = await postPerson(payload)
-      if (!ok) { setSaveStatus('error'); setSaveError('서버 저장 실패. 서버 응답을 확인해주세요.'); return }
-      setSaveStatus('success')
-    } catch (e) {
-      setSaveStatus('error')
-      setSaveError(e instanceof Error ? e.message : '저장 실패')
+    // 중복 체크: 같은 createdBy, 이름, 생년월일
+    setSaveStatus('saving')
+    const existing = await fetchPersonsByUser(createdBy)
+    const dups = existing.filter((p: any) => {
+      const bd = p.birthDate
+      return p.name === name.trim() &&
+        bd?.year === y && bd?.month === m && bd?.day === d
+    })
+    setSaveStatus('idle')
+
+    if (dups.length > 0) {
+      setDupInfo(dups.map((p: any) => {
+        const bd = p.birthDate
+        return {
+          id: p.id,
+          name: p.name,
+          birthDate: `${bd.year}.${String(bd.month).padStart(2,'0')}.${String(bd.day).padStart(2,'0')}`,
+        }
+      }))
+      setPendingPayload(payload)
+      return
     }
+
+    await doSave(payload)
   }
 
   const canCalc = year && month && day
@@ -126,7 +157,7 @@ export default function ManualInputPage() {
       <h2 className="text-xl font-semibold">수동 입력</h2>
 
       {/* 사용자 ID */}
-      <UserIdInput value={createdBy} onChange={setCreatedBy} onNicknameChange={setCreatedByNickname} />
+      <UserIdInput value={createdBy} onChange={setCreatedBy} onNicknameChange={setCreatedByNickname} onValidChange={setIsUserVerified} />
 
       {/* 이름 */}
       <div className="flex items-center gap-3">
@@ -240,6 +271,43 @@ export default function ManualInputPage() {
         </div>
       )}
 
+      {/* 중복 확인 모달 */}
+      {dupInfo && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4 space-y-4">
+            <h3 className="text-base font-semibold text-gray-800">중복 데이터 감지</h3>
+            <p className="text-sm text-gray-600">
+              이미 같은 사람의 자료가 {dupInfo!.length}건 존재합니다.
+            </p>
+            <div className="flex flex-col gap-2">
+              {dupInfo!.map((d, i) => (
+                <div key={d.id} className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm">
+                  {dupInfo!.length > 1 && <div className="text-xs text-gray-400 mb-1">{i + 1}번째</div>}
+                  <div><span className="text-gray-500">이름:</span> <span className="font-medium">{d.name}</span></div>
+                  <div><span className="text-gray-500">생년월일:</span> <span className="font-medium">{d.birthDate}</span></div>
+                  <div className="text-xs text-gray-400 mt-1">ID: {d.id}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-sm text-gray-600">그래도 새로 저장하시겠습니까?</p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setDupInfo(null); setPendingPayload(null) }}
+                className="px-4 py-2 rounded-lg text-sm border border-gray-300 hover:bg-gray-50"
+              >
+                취소
+              </button>
+              <button
+                onClick={() => { const p = pendingPayload; setDupInfo(null); setPendingPayload(null); if (p) doSave(p) }}
+                className="px-4 py-2 rounded-lg text-sm bg-blue-600 text-white font-medium hover:bg-blue-700"
+              >
+                저장
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 저장 결과 */}
       {saveStatus === 'success' && (
         <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700">saju-cube DB에 저장되었습니다.</div>
@@ -251,7 +319,7 @@ export default function ManualInputPage() {
       <div className="flex justify-end">
         <button
           onClick={handleSave}
-          disabled={!name.trim() || saveStatus === 'saving'}
+          disabled={!name.trim() || !isUserVerified || saveStatus === 'saving'}
           className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
           {saveStatus === 'saving' ? '저장 중...' : 'DB에 저장'}
         </button>

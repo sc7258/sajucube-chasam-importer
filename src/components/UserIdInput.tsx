@@ -5,11 +5,12 @@ interface Props {
   value: string
   onChange: (phone: string) => void
   onNicknameChange?: (nickname: string) => void
+  onValidChange?: (valid: boolean) => void
 }
 
 type Status = 'idle' | 'checking' | 'valid' | 'invalid'
 
-export default function UserIdInput({ value, onChange, onNicknameChange }: Props) {
+export default function UserIdInput({ value, onChange, onNicknameChange, onValidChange }: Props) {
   const [status, setStatus] = useState<Status>('idle')
   const [message, setMessage] = useState('')
   const [nickname, setNickname] = useState('')
@@ -20,6 +21,7 @@ export default function UserIdInput({ value, onChange, onNicknameChange }: Props
     const result = await checkSajuCubeUser(value.trim())
     setStatus(result.valid ? 'valid' : 'invalid')
     setMessage(result.message)
+    onValidChange?.(result.valid)
     if (result.valid && result.nickname) {
       setNickname(result.nickname)
       onNicknameChange?.(result.nickname)
@@ -41,6 +43,7 @@ export default function UserIdInput({ value, onChange, onNicknameChange }: Props
     setMessage('')
     setNickname('')
     onNicknameChange?.('')
+    onValidChange?.(false)
   }
 
   return (

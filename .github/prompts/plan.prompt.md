@@ -55,6 +55,24 @@ description: "프로젝트 전체 로드맵 및 현재 Todo 확인"
 - [x] payload에 `occupation: ''`, `deathReason: ''`, `createdByNickname` 추가
 - [x] 빌드 성공 (225.90 kB)
 
+### Phase 8 — createdByNickname 자동 채움 & 중복 저장 방지 ✅ (2026-03-21)
+- [x] `UserIdInput`: 확인 후 닉네임 필드 표시 (readonly, disabled 스타일)
+- [x] `UserIdInput`: 확인/오류 이모지 제거 (JSX 텍스트 노드 `\uXXXX` 깨짐 문제)
+- [x] `sajuCubeAuth.ts`: `/profile` 엔드포인트(X-User-Id 헤더)로 nickname 자동 조회
+- [x] `sajuCubeAuth.ts`: `fetchPersonsByUser()` 추가 — createdBy 기준 persons 목록 조회
+- [x] `ManualInputPage`: 저장 전 이름+생년월일 중복 체크
+- [x] `ManualInputPage`: 중복 발견 시 confirm 모달 표시 (이름/생년월일/ID 표시)
+- [x] 빌드 성공 (228.13 kB)
+
+### Phase 9 — 미인증 사용자 저장 차단 ✅ (2026-03-21)
+- [x] `UserIdInput`: `onValidChange?: (valid: boolean) => void` prop 추가
+- [x] `UserIdInput`: 확인 성공/실패 시 `onValidChange` 호출
+- [x] `UserIdInput`: 전화번호 변경 시 `onValidChange(false)` 초기화
+- [x] `ManualInputPage`: `isUserVerified` state 추가
+- [x] `ManualInputPage`: `UserIdInput`에 `onValidChange={setIsUserVerified}` 연결
+- [x] `ManualInputPage`: 저장 버튼 `disabled={!name.trim() || !isUserVerified || saveStatus === 'saving'}`
+- [x] 빌드 성공 (228.23 kB)
+
 ---
 
 ## 당장 해야 할 Todo
@@ -76,9 +94,7 @@ description: "프로젝트 전체 로드맵 및 현재 Todo 확인"
 
 ### Priority 2 — 데이터 품질
 
-- [ ] **중복 저장 방지**
-  - saju-cube에 이미 동일 이름+생년월일 레코드가 있으면 경고
-  - 옵션: 건너뛰기 / 덮어쓰기 선택
+- [x] **수동 입력 중복 저장 방지** ← 완료 (Phase 8)
 
 - [ ] **음력 윤달 처리 개선**
   - 차샘 레코드에서 윤달 여부를 추론할 방법 탐색
