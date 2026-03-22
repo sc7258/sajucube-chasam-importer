@@ -41,6 +41,23 @@ function isValidDate(year: number, month: number, day: number): boolean {
 }
 
 /**
+ * 음력 year/month/day를 양력으로 변환. 해당 날이 없으면(소월 등) 같은 달에서
+ * day를 1씩 내려가며 유효한 마지막 날을 반환. 해당 달 전체가 없으면 null.
+ */
+function tryLunarToSolar(year: number, month: number, day: number): { syear: number; smonth: number; sday: number } | null {
+  for (let d = day; d >= 1; d--) {
+    try {
+      const result = lunartosolar(year, month, d, 0);
+      const verify = solortolunar(result.syear, result.smonth, result.sday);
+      if (verify.lyear === year && verify.lmonth === month && verify.lday === d) {
+        return { syear: result.syear, smonth: result.smonth, sday: result.sday };
+      }
+    } catch {}
+  }
+  return null;
+}
+
+/**
  * 본원 기준으로 6개 날짜를 자동 계산합니다.
  * 
  * @param baseYear - 본원 연도
@@ -76,10 +93,8 @@ export function calculateAutoDates(
     let minus1Success = false;
     let minus2Success = false;
 
-    // 본원-1: 음력 년월일을 그대로 양력 숫자로 사용
-    if (baseLunar.lmoonyun === 1) {
-      errors.push(`음력 윤${baseLunar.lmonth}월 ${baseLunar.lday}일은 양력으로 표현할 수 없습니다.`);
-    } else {
+    // 본원-1: 음력 년월일을 그대로 양력 숫자로 사용 (윤달이어도 그대로 사용)
+    {
       const minus1 = {
         year: baseLunar.lyear,
         month: baseLunar.lmonth,
@@ -98,31 +113,26 @@ export function calculateAutoDates(
         dates.push(minus1);
         minus1Success = true;
 
-        // 본원-2: 본원-1을 음력으로 변환한 값을 양력 숫자로 사용
+        // 본원-2: 본원-1을 음력으로 변환한 값을 양력 숫자로 사용 (윤달이어도 그대로 사용)
         try {
           const minus1Lunar = solortolunar(minus1.year, minus1.month, minus1.day);
+          const minus2 = {
+            year: minus1Lunar.lyear,
+            month: minus1Lunar.lmonth,
+            day: minus1Lunar.lday,
+            label: '본원-2'
+          };
           
-          if (minus1Lunar.lmoonyun === 1) {
-            errors.push(`음력 윤${minus1Lunar.lmonth}월 ${minus1Lunar.lday}일은 양력으로 표현할 수 없습니다.`);
+          // 날짜 유효성 검증
+          if (!isValidDate(minus2.year, minus2.month, minus2.day)) {
+            errors.push(`${minus2.year}년 ${minus2.month}월 ${minus2.day}일은 존재하지 않는 날짜입니다.`);
+          }
+          // 기존 날짜들과 중복 체크
+          else if (dates.some(d => d.year === minus2.year && d.month === minus2.month && d.day === minus2.day)) {
+            errors.push('기존 날짜와 중복됩니다.');
           } else {
-            const minus2 = {
-              year: minus1Lunar.lyear,
-              month: minus1Lunar.lmonth,
-              day: minus1Lunar.lday,
-              label: '본원-2'
-            };
-            
-            // 날짜 유효성 검증
-            if (!isValidDate(minus2.year, minus2.month, minus2.day)) {
-              errors.push(`${minus2.year}년 ${minus2.month}월 ${minus2.day}일은 존재하지 않는 날짜입니다.`);
-            }
-            // 기존 날짜들과 중복 체크
-            else if (dates.some(d => d.year === minus2.year && d.month === minus2.month && d.day === minus2.day)) {
-              errors.push('기존 날짜와 중복됩니다.');
-            } else {
-              dates.push(minus2);
-              minus2Success = true;
-            }
+            dates.push(minus2);
+            minus2Success = true;
           }
         } catch (e) {
           errors.push('날짜가 유효하지 않습니다.');
@@ -135,98 +145,49 @@ export function calculateAutoDates(
     let plus2Success = false;
     let plus3Success = false;
 
-    // 본원+1: 원 양력을 음력으로 해석 → 양력으로 변환
-    try {
-      const plus1Solar = lunartosolar(base.year, base.month, base.day, 0);
-      
-      // 결과 검증
-      const verification = solortolunar(plus1Solar.syear, plus1Solar.smonth, plus1Solar.sday);
-      if (verification.lyear !== base.year || verification.lmonth !== base.month || verification.lday !== base.day) {
-        errors.push(`음력 ${base.year}년 ${base.month}월 ${base.day}일이 존재하지 않습니다.`);
-      } else {
-        const plus1 = {
-          year: plus1Solar.syear,
-          month: plus1Solar.smonth,
-          day: plus1Solar.sday,
-          label: '본원+1'
-        };
-        
-        // 기존 날짜들과 중복 체크
-        const isDuplicate = dates.some(d => 
-          d.year === plus1.year && d.month === plus1.month && d.day === plus1.day
-        );
-        
-        if (!isDuplicate) {
-          dates.push(plus1);
-          plus1Success = true;
+    // 본원+1: 원 양력을 음력으로 해석 → 양력으로 변환 (음력에 없는 날이면 같은 달 마지막 유효일로 내림)
+    const plus1Solar = tryLunarToSolar(base.year, base.month, base.day);
+    if (!plus1Solar) {
+      errors.push(`음력 ${base.year}년 ${base.month}월 유효한 날짜를 찾을 수 없습니다.`);
+    } else {
+      const plus1 = { year: plus1Solar.syear, month: plus1Solar.smonth, day: plus1Solar.sday, label: '본원+1' };
+      const isDuplicate = dates.some(d => d.year === plus1.year && d.month === plus1.month && d.day === plus1.day);
+      if (!isDuplicate) {
+        dates.push(plus1);
+        plus1Success = true;
 
-          // 본원+2: 본원+1 양력을 음력으로 해석 → 양력으로 재변환
-          try {
-            const plus2Solar = lunartosolar(plus1Solar.syear, plus1Solar.smonth, plus1Solar.sday, 0);
-            
-            const verification2 = solortolunar(plus2Solar.syear, plus2Solar.smonth, plus2Solar.sday);
-            if (verification2.lyear !== plus1Solar.syear || verification2.lmonth !== plus1Solar.smonth || verification2.lday !== plus1Solar.sday) {
-              errors.push(`음력 ${plus1Solar.syear}년 ${plus1Solar.smonth}월 ${plus1Solar.sday}일이 존재하지 않습니다.`);
+        // 본원+2: 본원+1 양력을 음력으로 해석 → 양력으로 재변환
+        const plus2Solar = tryLunarToSolar(plus1Solar.syear, plus1Solar.smonth, plus1Solar.sday);
+        if (!plus2Solar) {
+          errors.push(`음력 ${plus1Solar.syear}년 ${plus1Solar.smonth}월 유효한 날짜를 찾을 수 없습니다.`);
+        } else {
+          const plus2 = { year: plus2Solar.syear, month: plus2Solar.smonth, day: plus2Solar.sday, label: '본원+2' };
+          const isDuplicate2 = dates.some(d => d.year === plus2.year && d.month === plus2.month && d.day === plus2.day);
+          if (!isDuplicate2) {
+            dates.push(plus2);
+            plus2Success = true;
+
+            // 본원+3: 본원+2 양력을 음력으로 해석 → 양력으로 재변환
+            const plus3Solar = tryLunarToSolar(plus2Solar.syear, plus2Solar.smonth, plus2Solar.sday);
+            if (!plus3Solar) {
+              errors.push(`음력 ${plus2Solar.syear}년 ${plus2Solar.smonth}월 유효한 날짜를 찾을 수 없습니다.`);
             } else {
-              const plus2 = {
-                year: plus2Solar.syear,
-                month: plus2Solar.smonth,
-                day: plus2Solar.sday,
-                label: '본원+2'
-              };
-              
-              // 기존 날짜들과 중복 체크
-              const isDuplicate2 = dates.some(d => 
-                d.year === plus2.year && d.month === plus2.month && d.day === plus2.day
-              );
-              
-              if (!isDuplicate2) {
-                dates.push(plus2);
-                plus2Success = true;
-
-                // 본원+3: 본원+2 양력을 음력으로 해석 → 양력으로 재변환
-                try {
-                  const plus3Solar = lunartosolar(plus2Solar.syear, plus2Solar.smonth, plus2Solar.sday, 0);
-                  
-                  const verification3 = solortolunar(plus3Solar.syear, plus3Solar.smonth, plus3Solar.sday);
-                  if (verification3.lyear !== plus2Solar.syear || verification3.lmonth !== plus2Solar.smonth || verification3.lday !== plus2Solar.sday) {
-                    errors.push(`음력 ${plus2Solar.syear}년 ${plus2Solar.smonth}월 ${plus2Solar.sday}일이 존재하지 않습니다.`);
-                  } else {
-                    const plus3 = {
-                      year: plus3Solar.syear,
-                      month: plus3Solar.smonth,
-                      day: plus3Solar.sday,
-                      label: '본원+3'
-                    };
-                    
-                    // 기존 날짜들과 중복 체크
-                    const isDuplicate3 = dates.some(d => 
-                      d.year === plus3.year && d.month === plus3.month && d.day === plus3.day
-                    );
-                    
-                    if (!isDuplicate3) {
-                      dates.push(plus3);
-                      plus3Success = true;
-                    } else {
-                      errors.push('기존 날짜와 중복됩니다.');
-                    }
-                  }
-                } catch (e) {
-                  errors.push('날짜가 유효하지 않습니다.');
-                }
+              const plus3 = { year: plus3Solar.syear, month: plus3Solar.smonth, day: plus3Solar.sday, label: '본원+3' };
+              const isDuplicate3 = dates.some(d => d.year === plus3.year && d.month === plus3.month && d.day === plus3.day);
+              if (!isDuplicate3) {
+                dates.push(plus3);
+                plus3Success = true;
               } else {
                 errors.push('기존 날짜와 중복됩니다.');
               }
             }
-          } catch (e) {
-            errors.push('날짜가 유효하지 않습니다.');
+          } else {
+            errors.push('기존 날짜와 중복됩니다.');
           }
-        } else {
-          errors.push('기존 날짜와 중복됩니다.');
         }
+      } else {
+        errors.push('기존 날짜와 중복됩니다.');
       }
-    } catch (e) {
-      errors.push('날짜가 유효하지 않습니다.');
     }
 
     // 결과 판단

@@ -2,8 +2,53 @@ import { useState } from 'react'
 import { calculateAutoDates } from '@/utils/dateCalculation'
 import { convertRecord, type ChasamRecord } from '@/utils/chasamConverter'
 import { sydtoso24yd, ganji } from '@/utils/calculationModule'
-import { postPerson, fetchPersonsByUser } from '@/utils/sajuCubeAuth'
+import { postPerson, fetchPersonsByUser, fetchPersonById } from '@/utils/sajuCubeAuth'
 import UserIdInput from '@/components/UserIdInput'
+
+/** 키 순서에 무관한 재귀 deep-equal */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== (b as unknown[]).length) return false
+    return (a as unknown[]).every((v, i) => deepEqual(v, (b as unknown[])[i]))
+  }
+  const aObj = a as Record<string, unknown>
+  const bObj = b as Record<string, unknown>
+  const aKeys = Object.keys(aObj).sort()
+  const bKeys = Object.keys(bObj).sort()
+  if (aKeys.length !== bKeys.length) return false
+  return aKeys.every((k, i) => bKeys[i] === k && deepEqual(aObj[k], bObj[k]))
+}
+
+/** 서버 splitPersonData()와 동일한 필드 분리 */
+function splitPersonPayload(p: Record<string, unknown>): { person_basic: Record<string, unknown>; person_detail: Record<string, unknown> } {
+  const person_basic: Record<string, unknown> = {
+    id: p.id,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+    createdBy: p.createdBy,
+    createdByNickname: p.createdByNickname,
+    name: p.name,
+    gender: p.gender,
+    occupation: p.occupation,
+    deathReason: p.deathReason,
+    keywords: p.keywords,
+    birthDate: p.birthDate,
+    additionalDates: p.additionalDates,
+    isPrivate: p.isPrivate === true,
+  }
+  const person_detail: Record<string, unknown> = {
+    id: p.id,
+    birthPlace: p.birthPlace,
+    notes: p.notes,
+    referenceLinks: p.referenceLinks,
+    relationships: p.relationships,
+    familyMemberIds: p.familyMemberIds,
+  }
+  return { person_basic, person_detail }
+}
 
 function timeToSijin(timeStr: string): { label: string; hourValue: number } | null {
   if (!timeStr) return null
@@ -45,7 +90,9 @@ export default function ManualInputPage() {
   const [autoDates, setAutoDates] = useState<AutoDate[] | null>(null)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle')
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [dupInfo, setDupInfo] = useState<{ id: string; name: string; birthDate: string }[] | null>(null)
+  const [verifyResult, setVerifyResult] = useState<'match' | 'mismatch' | null>(null)
+  const [verifyDiffs, setVerifyDiffs] = useState<string[]>([])
+  const [dupInfo, setDupInfo] = useState<{ id: string; name: string; birthDate: string; notes?: string }[] | null>(null)
   const [pendingPayload, setPendingPayload] = useState<Record<string, unknown> | null>(null)
 
   function handleCalc() {
@@ -61,32 +108,51 @@ export default function ManualInputPage() {
   }
 
   async function doSave(payload: Record<string, unknown>) {
-    setSaveStatus('saving'); setSaveError(null)
+    setSaveStatus('saving'); setSaveError(null); setVerifyResult(null); setVerifyDiffs([])
     try {
       const ok = await postPerson(payload)
       if (!ok) { setSaveStatus('error'); setSaveError('서버 저장 실패. 서버 응답을 확인해주세요.'); return }
       setSaveStatus('success')
+
+      // Phase 20/21: 저장 직후 서버에서 재조회 → split 결과 자동 비교
+      const savedFlat = await fetchPersonById(payload.id as string, payload.createdBy as string)
+      if (savedFlat) {
+        const clientSplit = splitPersonPayload(payload)
+        const serverSplit = splitPersonPayload(savedFlat)
+        const diffs: string[] = []
+        for (const k of Object.keys(clientSplit.person_basic)) {
+          if (!deepEqual(clientSplit.person_basic[k], serverSplit.person_basic[k]))
+            diffs.push(`person_basic.${k}: client=${JSON.stringify(clientSplit.person_basic[k])} / server=${JSON.stringify(serverSplit.person_basic[k])}`)
+        }
+        for (const k of Object.keys(clientSplit.person_detail)) {
+          if (!deepEqual(clientSplit.person_detail[k], serverSplit.person_detail[k]))
+            diffs.push(`person_detail.${k}: client=${JSON.stringify(clientSplit.person_detail[k])} / server=${JSON.stringify(serverSplit.person_detail[k])}`)
+        }
+        if (diffs.length > 0) {
+          console.warn('[split 검증] 클라이언트↔서버 불일치:', diffs)
+          setVerifyResult('mismatch'); setVerifyDiffs(diffs)
+        } else {
+          console.log('[split 검증] 일치 \u2705')
+          setVerifyResult('match'); setVerifyDiffs([])
+        }
+      }
     } catch (e) {
       setSaveStatus('error')
       setSaveError(e instanceof Error ? e.message : '저장 실패')
     }
   }
 
-  async function handleSave() {
-    if (!name.trim() || !createdBy) return
-    setSaveError(null)
+  function buildFlatPayload(overrideCreatedBy?: string): Record<string, unknown> | null {
     const y = parseInt(year), m = parseInt(month), d = parseInt(day)
-    if (!y || !m || !d) { setSaveStatus('error'); setSaveError('생년월일을 입력해주세요'); return }
+    if (!y || !m || !d) return null
 
-    const birthHour = hourUnknown ? 11 : (sijin?.hourValue ?? 12)
-    const birthMinute = hourUnknown ? 0 : (birthTime ? (parseInt(birthTime.split(':')[1]) || 0) : 0)
+    const birthHour   = hourUnknown ? 11 : (sijin?.hourValue ?? 12)
+    const birthMinute = hourUnknown ? 0  : (birthTime ? (parseInt(birthTime.split(':')[1]) || 0) : 0)
 
-    // 일주(dayPillar), 월주(monthPillar) 계산 — 한자
     const saju = sydtoso24yd(y, m, d, birthHour, birthMinute)
     const dayPillarHanja   = ganji[saju.so24day]
     const monthPillarHanja = ganji[saju.so24month]
 
-    // 6개 명식 날짜 계산
     const fakeRecord: ChasamRecord = {
       id: `manual-${Date.now()}`,
       sex: gender,
@@ -96,51 +162,67 @@ export default function ManualInputPage() {
       birthHour, birthMinute,
       birthDateTime: '', memo, ilju: '', iljuHanja: '',
     }
-    const result = convertRecord(fakeRecord, createdBy)
+    const result = convertRecord(fakeRecord, overrideCreatedBy ?? createdBy)
 
-    // additionalDates: 전체 항목에 각각 한자 dayPillar/monthPillar 계산
     const additionalDates = (result.data.additionalDates ?? []).map(ad => {
       const adSaju = sydtoso24yd(ad.year, ad.month, ad.day, birthHour, birthMinute)
-      return {
-        ...ad,
-        dayPillar:   ganji[adSaju.so24day],
-        monthPillar: ganji[adSaju.so24month],
-      }
+      return { ...ad, dayPillar: ganji[adSaju.so24day], monthPillar: ganji[adSaju.so24month] }
     })
 
-    // POST payload: person_basic + person_detail 필드 모두 포함
-    const payload = {
+    return {
       ...result.data,
       createdAt: new Date().toISOString(),
-      createdByNickname: createdByNickname,
+      createdByNickname,
       birthDate: { ...result.data.birthDate, dayPillar: dayPillarHanja, monthPillar: monthPillarHanja },
       additionalDates,
       occupation: '',
       deathReason: '',
       isPrivate: false,
-      // person_detail 필드
       notes: memo.trim(),
       birthPlace: '',
       referenceLinks: [] as string[],
     }
+  }
+
+  function handleDownloadJson() {
+    if (!name.trim()) return
+    const flat = buildFlatPayload('preview')
+    if (!flat) return
+    const split = splitPersonPayload(flat)
+    const blob = new Blob([JSON.stringify(split, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url
+    a.download = `manual-${name.trim()}-${new Date().toISOString().slice(0, 10)}.json`
+    a.click(); URL.revokeObjectURL(url)
+  }
+
+  async function handleSave() {
+    if (!name.trim() || !createdBy) return
+    setSaveError(null)
+    const y = parseInt(year), m = parseInt(month), d = parseInt(day)
+    if (!y || !m || !d) { setSaveStatus('error'); setSaveError('생년월일을 입력해주세요'); return }
+
+    const payload = buildFlatPayload()
+    if (!payload) { setSaveStatus('error'); setSaveError('payload 조립 실패'); return }
 
     // 중복 체크: 같은 createdBy, 이름, 생년월일
     setSaveStatus('saving')
     const existing = await fetchPersonsByUser(createdBy)
-    const dups = existing.filter((p: any) => {
-      const bd = p.birthDate
+    const dups = (existing as Record<string, unknown>[]).filter((p) => {
+      const bd = p.birthDate as { year: number; month: number; day: number } | undefined
       return p.name === name.trim() &&
         bd?.year === y && bd?.month === m && bd?.day === d
     })
     setSaveStatus('idle')
 
     if (dups.length > 0) {
-      setDupInfo(dups.map((p: any) => {
-        const bd = p.birthDate
+      setDupInfo(dups.map((p) => {
+        const bd = p.birthDate as { year: number; month: number; day: number }
         return {
-          id: p.id,
-          name: p.name,
+          id: p.id as string,
+          name: p.name as string,
           birthDate: `${bd.year}.${String(bd.month).padStart(2,'0')}.${String(bd.day).padStart(2,'0')}`,
+          notes: (p.notes || (p.person_detail as Record<string, unknown> | undefined)?.notes || undefined) as string | undefined,
         }
       }))
       setPendingPayload(payload)
@@ -285,23 +367,38 @@ export default function ManualInputPage() {
                   {dupInfo!.length > 1 && <div className="text-xs text-gray-400 mb-1">{i + 1}번째</div>}
                   <div><span className="text-gray-500">이름:</span> <span className="font-medium">{d.name}</span></div>
                   <div><span className="text-gray-500">생년월일:</span> <span className="font-medium">{d.birthDate}</span></div>
+                  {d.notes && <div className="text-xs text-gray-500 mt-1">메모: {d.notes}</div>}
                   <div className="text-xs text-gray-400 mt-1">ID: {d.id}</div>
                 </div>
               ))}
             </div>
             <p className="text-sm text-gray-600">그래도 새로 저장하시겠습니까?</p>
-            <div className="flex gap-2 justify-end">
+            <div className="flex gap-2 justify-end flex-wrap">
               <button
                 onClick={() => { setDupInfo(null); setPendingPayload(null) }}
                 className="px-4 py-2 rounded-lg text-sm border border-gray-300 hover:bg-gray-50"
               >
                 취소
               </button>
+              {dupInfo!.length === 1 && (
+                <button
+                  onClick={() => {
+                    const p = pendingPayload
+                    const existingNotes = dupInfo![0].notes
+                    const mergedNotes = [existingNotes, memo.trim()].filter(Boolean).join(' / ')
+                    setDupInfo(null); setPendingPayload(null)
+                    if (p) doSave({ ...p, notes: mergedNotes })
+                  }}
+                  className="px-4 py-2 rounded-lg text-sm bg-green-600 text-white font-medium hover:bg-green-700"
+                >
+                  메모 병합 후 저장
+                </button>
+              )}
               <button
                 onClick={() => { const p = pendingPayload; setDupInfo(null); setPendingPayload(null); if (p) doSave(p) }}
                 className="px-4 py-2 rounded-lg text-sm bg-blue-600 text-white font-medium hover:bg-blue-700"
               >
-                저장
+                그냥 새로 저장
               </button>
             </div>
           </div>
@@ -310,13 +407,26 @@ export default function ManualInputPage() {
 
       {/* 저장 결과 */}
       {saveStatus === 'success' && (
-        <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700">saju-cube DB에 저장되었습니다.</div>
+        <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700">
+          saju-cube DB에 저장되었습니다.{verifyResult === 'match' && ' 생성된 json과 일치합니다.'}
+        </div>
+      )}
+      {saveStatus === 'success' && verifyResult === 'mismatch' && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-3 text-sm text-yellow-700">
+          {'\u26a0\ufe0f'} split 불일치 ({verifyDiffs.length}건): {verifyDiffs[0]}{verifyDiffs.length > 1 ? ' ...' : ''}
+        </div>
       )}
       {saveStatus === 'error' && (
         <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">{saveError}</div>
       )}
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <button
+          onClick={handleDownloadJson}
+          disabled={!name.trim() || !year || !month || !day}
+          className="border border-gray-300 text-gray-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          JSON 생성
+        </button>
         <button
           onClick={handleSave}
           disabled={!name.trim() || !isUserVerified || saveStatus === 'saving'}

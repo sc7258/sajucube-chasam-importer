@@ -73,6 +73,107 @@ description: "프로젝트 전체 로드맵 및 현재 Todo 확인"
 - [x] `ManualInputPage`: 저장 버튼 `disabled={!name.trim() || !isUserVerified || saveStatus === 'saving'}`
 - [x] 빌드 성공 (228.23 kB)
 
+### Phase 10 — ImportPage/ReviewPage payload 완전화 ✅ (2026-03-21)
+- [x] `ImportPage`: `createdByNickname` state 추가 + `UserIdInput`에 `onNicknameChange` 연결
+- [x] `ImportPage`: `navigate('/review', { state: { ..., createdByNickname } })` 추가
+- [x] `ReviewPage`: `location.state`에서 `createdBy`, `createdByNickname` 수신
+- [x] `ReviewPage`: `sydtoso24yd`, `ganji` import 추가
+- [x] `ReviewPage`: `handleSave()`에서 ManualInputPage와 동일한 payload 조립 (dayPillar/monthPillar, additionalDates 한자 pillar, occupation/deathReason/isPrivate/birthPlace/referenceLinks/createdByNickname)
+- [x] 빌드 성공 (229.05 kB)
+
+### Phase 11 — ImportPage 미인증 사용자 차단 ✅ (2026-03-21)
+- [x] `ImportPage`: `isUserVerified` state 추가
+- [x] `ImportPage`: `UserIdInput`에 `onValidChange={setIsUserVerified}` 연결
+- [x] `ImportPage`: 다음 단계 버튼 `disabled={!isUserVerified}` 로 변경
+- [x] `ImportPage`: 안내 문구 "사용자 ID 확인 후 진행할 수 있습니다" 로 변경
+- [x] 빌드 성공 (229.09 kB)
+
+### Phase 12 — 차샘 variant 중복 감지 ✅ (2026-03-22)
+- [x] `chasamConverter.ts`: `stripVariantSuffix()` — 접미사 제거 후 base name 반환
+  - 접미사 패턴: `++`, `+-`, `-+`, `--`, `정`, `본`, `허`, `부허`, `1`, `2`, `3` (이름 끝에 붙는 것만)
+- [x] `chasamConverter.ts`: `detectVariants(results)` 함수 추가
+  - base name 동일 AND additionalDates 교집합 4개 이상 → 같은 그룹
+  - 그룹 내 대표: 이름이 가장 짧은 것 (원본 추정)
+  - `Map<keepId, variantIds[]>` 반환
+- [x] `ReviewPage`: `detectVariants()` import 및 호출
+- [x] `ReviewPage`: variant IDs를 `excludedVariants` state로 관리 (초기 자동 제외)
+- [x] `ReviewPage`: "변형 중복 (제외)" 탭 추가 — 제외된 variant 목록 표시 + 개별 포함 복원 버튼
+- [x] `ReviewPage`: 저장 목록에서 excludedVariants 자동 제외
+- [x] 빌드 성공 (231.60 kB)
+
+### Phase 13 — calculateAutoDates 엣지케이스 수정 ✅ (2026-03-22)
+- [x] `dateCalculation.ts`: 윤달(lmoonyun=1) 시 본원–1 계산 — 윤달 체크 제거, 음력 숫자를 그대로 양력으로 사용
+- [x] `dateCalculation.ts`: 음력에 없는 날(소월) 시 본원+1/+2/+3 계산 — `tryLunarToSolar()` fallback 헬퍼 추가 (같은 달 마지막 유효일로 내림)
+- [x] `dateCalculation.ts`: 본원–2 윤달 체크도 동일하게 제거
+- [x] 빌드 성공 (231.65 kB)
+
+### Phase 14 — ReviewPage 이름순 정렬 버튼 ✅ (2026-03-22)
+- [x] `ReviewPage`: `sortByName` state 추가
+- [x] `ReviewPage`: 전체/경고 탭 목록에 `localeCompare('ko')` 정렬 적용
+- [x] `ReviewPage`: stats 줄 옆에 "이름순 정렬" 토글 버튼 추가 (활성 시 blue 스타일)
+- [x] 빌드 성공 (231.65 kB)
+
+### Phase 15 — 쌍 감지 → 그룹 병합으로 통합 ✅ (2026-03-22)
+- [x] `chasamConverter.ts`: `MergedGroup` 인터페이스 + `mergeVariants(results, variantMap)` 함수 추가
+- [x] `ReviewPage`: `detectPairs` / `rawRecords` / `excludedVariants` / `restoreVariant` 제거
+- [x] `ReviewPage`: `mergeVariants()` 호출 → `initialPersons` / `mergedGroups` 초기화
+- [x] `ReviewPage`: `FilterTab` 타입 `'pairs' | 'variants'` → `'groups'` 교체
+- [x] `ReviewPage`: "그룹 병합" 탭 UI — 대표 + 흡수된 이름 목록 표시
+- [x] 빌드 성공 (230.39 kB)
+
+### Phase 16 — detectVariants 윤달 예외 처리 ✅ (2026-03-22)
+- [x] `chasamConverter.ts`: `solortolunar` import 추가
+- [x] `chasamConverter.ts`: `detectVariants()` — 양력 생년월일을 음력으로 변환 시 `lmoonyun === 1`이면 윤달로 판단
+- [x] `chasamConverter.ts`: 그룹 내 비교 시 둘 중 하나라도 윤달이면 이름만으로 병합 (dateIntersection 스킵)
+- [x] 빌드 성공 (230.55 kB)
+
+### Phase 17 — ManualInputPage 중복 모달 메모 병합 옵션 ✅ (2026-03-22)
+- [x] `ManualInputPage`: `dupInfo` 타입에 `notes?: string` 필드 추가
+- [x] `ManualInputPage`: 중복 감지 시 기존 `notes` 포함하여 `dupInfo` 저장
+- [x] `ManualInputPage`: 중복 모달에 기존 메모 표시
+- [x] `ManualInputPage`: 1건일 때만 "메모 병합 후 저장" 버튼 표시 — `[기존notes, 새notes].filter(Boolean).join(' / ')`
+- [x] 빌드 성공 (231.03 kB)
+
+### Phase 18 — ReviewPage JSON 내보내기 payload 완전화 ✅ (2026-03-22)
+- [x] `ReviewPage`: JSON 저장 시도 supabase와 동일한 payload 조립 (dayPillar/monthPillar, additionalDates pillar, occupation/deathReason/isPrivate/birthPlace/referenceLinks/notes/createdByNickname)
+- [x] 빌드 성공 (231.08 kB)
+
+### Phase 19 — JSON export를 person_basic/person_detail split 포맷으로 + ManualInputPage JSON 생성 버튼 ✅ (2026-03-22)
+- [x] `splitPersonPayload()` 헬퍼 추가 (양 파일) — 서버 `splitPersonData()`와 동일 필드 (keywords 포함)
+- [x] `ReviewPage`: JSON 저장 경로를 split 포맷으로 변경 (`[{ person_basic, person_detail }]`)
+- [x] `ManualInputPage`: `buildFlatPayload()` 함수 추출 (handleSave·handleDownloadJson 공유)
+- [x] `ManualInputPage`: `handleDownloadJson()` 추가 — split JSON 다운로드 (인증 불필요)
+- [x] `ManualInputPage`: "JSON 생성" 버튼 추가 (DB에 저장 버튼 옆)
+- [x] 빌드 성공 (233.75 kB)
+
+### Phase 20 — ManualInputPage DB저장 후 서버 split 결과와 자동 비교 ✅ (2026-03-22)
+- [x] `sajuCubeAuth.ts`: `fetchPersonById()` 추가 — GET /persons/:id
+- [x] `doSave()` 성공 후: `fetchPersonById`로 서버 저장 레코드 재조회
+- [x] 클라이언트 `splitPersonPayload(payload)` ↔ 서버 `splitPersonPayload(savedFlat)` deep-compare
+- [x] 차이 발생 시 `console.warn` + 화면 `saveError` 토스트 표시; 일치 시 `console.log` ✅
+- [x] 빌드 성공 (233.75 kB)
+
+### Phase 21 — deep-compare 키 순서 무관 비교로 개선 ✅ (2026-03-22)
+- [x] `deepEqual()` 재귀 헬퍼 추가 — 객체 키 정렬 후 비교, 배열 순서는 유지
+- [x] `doSave()` 비교 로직: `JSON.stringify` → `deepEqual` 로 교체
+- [x] 빌드 성공 (234.15 kB)
+
+### Phase 22 — 저장 성공 메시지에 split 검증 결과 통합 ✅ (2026-03-22)
+- [x] `verifyResult` state 추가: `'match' | 'mismatch' | null`
+- [x] `verifyDiffs` state 추가: `string[]`
+- [x] `doSave()`: 검증 결과를 `saveError` 대신 `verifyResult`/`verifyDiffs`로 분리
+- [x] 일치 → "saju-cube DB에 저장되었습니다. 생성된 json과 일치합니다."
+- [x] 불일치 → 초록 저장 메시지 + 노란 경고 별도 표시
+- [x] 빌드 성공 (234.50 kB)
+
+### Phase 23 — ReviewPage DB 저장에도 split 검증 추가 ✅ (2026-03-22)
+- [x] `fetchPersonById` import 추가
+- [x] `deepEqual` 헬퍼를 ReviewPage에 추가 (module-level)
+- [x] `SaveResult` 인터페이스에 `mismatchNames: string[]` 추가
+- [x] DB 저장 루프: 각 건 저장 후 `fetchPersonById` → `deepEqual` 비교, 불일치 건 수집
+- [x] done 단계: 전체 일치 → 초록 "생성된 json과 일치합니다.", 불일치 → 노란 경고 + 이름 목록
+- [x] 빌드 성공 (235.70 kB)
+
 ---
 
 ## 당장 해야 할 Todo

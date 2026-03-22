@@ -3,7 +3,7 @@
  * specs/02-converter-module.md 참조
  */
 
-import { lunartosolar, sydtoso24yd, ganji } from '@/utils/calculationModule'
+import { lunartosolar, solortolunar, sydtoso24yd, ganji } from '@/utils/calculationModule'
 import { calculateAutoDates } from '@/utils/dateCalculation'
 
 // 60갑자 한자 → 한글 매핑
@@ -210,8 +210,125 @@ export function convertRecord(record: ChasamRecord, createdBy: string): Conversi
 }
 
 /**
- * 여러 레코드 배치 변환
+ * 차샘 variant 접미사 제거 → base name 반환
+ * 예: "홍길동++" → "홍길동", "홍길동부허" → "홍길동"
  */
+export function stripVariantSuffix(name: string): string {
+  return name
+    .replace(/(\+\+|\+\-|\-\+|\-\-|[+\-])$/, '')
+    .replace(/(부허|본원|정본|허본)$/, '')
+    .replace(/[정본허]$/, '')
+    .replace(/[123]$/, '')
+    .trim()
+}
+
+/**
+ * variant 중복 감지
+ * 조건: base name 동일 AND additionalDates year-month-day 교집합 4개 이상
+ * 반환: Map<keepId, variantIds[]>  (keepId = 그룹 내 이름이 가장 짧은 레코드)
+ */
+export function detectVariants(results: ConversionResult[]): Map<string, string[]> {
+  // base name 그룹화
+  const groups = new Map<string, ConversionResult[]>()
+  for (const r of results) {
+    if (r.status === 'error') continue
+    const base = stripVariantSuffix(r.data.name)
+    if (!groups.has(base)) groups.set(base, [])
+    groups.get(base)!.push(r)
+  }
+
+  const variantMap = new Map<string, string[]>()
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue
+
+    // 각 레코드의 additionalDates를 key Set으로
+    const dateSets = group.map(r => new Set(
+      (r.data.additionalDates ?? []).map(d => `${d.year}-${d.month}-${d.day}`)
+    ))
+
+    // Union-Find로 교집합 4개 이상인 쌍 그룹화
+    const parent = group.map((_, i) => i)
+    function find(i: number): number { return parent[i] === i ? i : (parent[i] = find(parent[i])) }
+    function union(a: number, b: number) { parent[find(a)] = find(b) }
+
+    // 윤달 여부: 양력 생년월일 → 음력 변환 시 lmoonyun === 1이면 인접 윤달 존재
+    const isLeapAdjacent = group.map(r => {
+      try { return solortolunar(r.data.birthDate.year, r.data.birthDate.month, r.data.birthDate.day).lmoonyun === 1 } catch { return false }
+    })
+
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        // 둘 중 하나라도 윤달이면 이름만으로 병합 (날짜 계산 오차 무시)
+        if (isLeapAdjacent[i] || isLeapAdjacent[j]) { union(i, j); continue }
+        let overlap = 0
+        for (const key of dateSets[i]) { if (dateSets[j].has(key)) overlap++ }
+        if (overlap >= 4) union(i, j)
+      }
+    }
+
+    // 컴포넌트별로 묶기
+    const components = new Map<number, number[]>()
+    for (let i = 0; i < group.length; i++) {
+      const root = find(i)
+      if (!components.has(root)) components.set(root, [])
+      components.get(root)!.push(i)
+    }
+
+    for (const indices of components.values()) {
+      if (indices.length < 2) continue
+      // 이름이 가장 짧은 것을 대표로
+      indices.sort((a, b) => group[a].data.name.length - group[b].data.name.length)
+      const keepId = group[indices[0]].data.id
+      const variantIds = indices.slice(1).map(i => group[i].data.id)
+      variantMap.set(keepId, variantIds)
+    }
+  }
+
+  return variantMap
+}
+
+export interface MergedGroup {
+  representative: MinimalPersonData
+  absorbed: MinimalPersonData[]
+}
+
+/**
+ * variant 그룹을 자동 병합 — 대표 레코드(이름 가장 짧은 것) 유지, notes 합산
+ * 반환: 병합 후 persons 목록 + 병합 그룹 정보
+ */
+export function mergeVariants(
+  results: ConversionResult[],
+  variantMap: Map<string, string[]>
+): { persons: MinimalPersonData[]; groups: MergedGroup[] } {
+  const allVariantIds = new Set<string>()
+  for (const vids of variantMap.values()) vids.forEach(id => allVariantIds.add(id))
+
+  const byId = new Map<string, MinimalPersonData>()
+  results.forEach(r => { if (r.status !== 'error') byId.set(r.data.id, r.data) })
+
+  const persons: MinimalPersonData[] = []
+  const groups: MergedGroup[] = []
+
+  for (const r of results) {
+    if (r.status === 'error') continue
+    const p = r.data
+    if (allVariantIds.has(p.id)) continue
+    if (variantMap.has(p.id)) {
+      const variantIds = variantMap.get(p.id)!
+      const absorbed = variantIds.map(id => byId.get(id)!).filter(Boolean)
+      const allNotes = [p.notes, ...absorbed.map(v => v.notes)].filter((n): n is string => !!n)
+      const mergedNotes = allNotes.length > 0 ? allNotes.join(' / ') : undefined
+      const merged: MinimalPersonData = { ...p, notes: mergedNotes }
+      persons.push(merged)
+      groups.push({ representative: merged, absorbed })
+    } else {
+      persons.push(p)
+    }
+  }
+  return { persons, groups }
+}
+
 export function convertBatch(records: ChasamRecord[], createdBy: string): BatchConversionResult {
   const results = records.map(r => convertRecord(r, createdBy))
   return {

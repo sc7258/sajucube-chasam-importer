@@ -1,20 +1,39 @@
 import { useState, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import {
-  detectPairs,
+  detectVariants,
+  mergeVariants,
   type BatchConversionResult,
-  type ChasamRecord,
   type ConversionResult,
   type MinimalPersonData,
+  type MergedGroup,
 } from '@/utils/chasamConverter'
-import { postPerson } from '@/utils/sajuCubeAuth'
+import { sydtoso24yd, ganji } from '@/utils/calculationModule'
+import { postPerson, fetchPersonById } from '@/utils/sajuCubeAuth'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type FilterTab = 'all' | 'warning' | 'error' | 'pairs'
+type FilterTab = 'all' | 'warning' | 'error' | 'groups'
 type Stage = 'list' | 'confirm' | 'saving' | 'done'
 type SaveMode = 'json' | 'supabase'
-interface SaveResult { success: number; failed: number; failedNames: string[] }
+interface SaveResult { success: number; failed: number; failedNames: string[]; mismatchNames: string[] }
+
+/** 키 순서에 무관한 재귀 deep-equal */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== (b as unknown[]).length) return false
+    return (a as unknown[]).every((v, i) => deepEqual(v, (b as unknown[])[i]))
+  }
+  const aObj = a as Record<string, unknown>
+  const bObj = b as Record<string, unknown>
+  const aKeys = Object.keys(aObj).sort()
+  const bKeys = Object.keys(bObj).sort()
+  if (aKeys.length !== bKeys.length) return false
+  return aKeys.every((k, i) => bKeys[i] === k && deepEqual(aObj[k], bObj[k]))
+}
 
 // ── HOUR_OPTIONS ──────────────────────────────────────────────────────────────
 
@@ -201,24 +220,30 @@ function EditModal({ person, onSave, onClose }: {
 export default function ReviewPage() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { batchResult, rawRecords } = (location.state ?? {}) as {
+  const { batchResult, createdBy: stateCreatedBy, createdByNickname: stateCreatedByNickname } = (location.state ?? {}) as {
     batchResult: BatchConversionResult | undefined
-    rawRecords: ChasamRecord[] | undefined
+    createdBy: string | undefined
+    createdByNickname: string | undefined
   }
+  const createdBy = stateCreatedBy ?? ''
+  const createdByNickname = stateCreatedByNickname ?? ''
 
-  // mutable editable list (errors excluded from the start)
-  const [persons, setPersons] = useState<MinimalPersonData[]>(() =>
-    batchResult ? batchResult.results.filter(r => r.status !== 'error').map(r => r.data) : []
+  const variantMap = useMemo(
+    () => batchResult ? detectVariants(batchResult.results) : new Map<string, string[]>(),
+    [batchResult]
   )
+  const { persons: initialPersons, groups: mergedGroups } = useMemo(
+    () => batchResult ? mergeVariants(batchResult.results, variantMap) : { persons: [], groups: [] as MergedGroup[] },
+    [batchResult, variantMap]
+  )
+  const [persons, setPersons] = useState<MinimalPersonData[]>(() => initialPersons)
   const [editingPerson, setEditingPerson] = useState<MinimalPersonData | null>(null)
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [filterTab, setFilterTab] = useState<FilterTab>('all')
+  const [sortByName, setSortByName] = useState(false)
   const [stage, setStage] = useState<Stage>('list')
   const [saveMode, setSaveMode] = useState<SaveMode>('json')
   const [saveResult, setSaveResult] = useState<SaveResult | null>(null)
-
-  const pairs = useMemo(() => (rawRecords ? detectPairs(rawRecords) : []), [rawRecords])
-  const pairsWithMatch = pairs.filter(p => p.isPair)
 
   const resultMap = useMemo(() => {
     const m = new Map<string, ConversionResult>()
@@ -226,7 +251,7 @@ export default function ReviewPage() {
     return m
   }, [batchResult])
 
-  if (!batchResult || !rawRecords) {
+  if (!batchResult) {
     return (
       <div className="max-w-4xl mx-auto text-center py-16">
         <p className="text-gray-500 mb-4">데이터가 없습니다. 먼저 파일을 임포트해주세요.</p>
@@ -237,10 +262,6 @@ export default function ReviewPage() {
 
   const errors = batchResult.results.filter(r => r.status === 'error')
   const warnings = persons.filter(p => resultMap.get(p.id)?.status === 'warning')
-  const pairsInList = pairsWithMatch.filter(p =>
-    (p.sRecord && persons.some(x => x.id === p.sRecord!.id)) ||
-    (p.lRecord && persons.some(x => x.id === p.lRecord!.id))
-  )
 
   function deleteById(id: string) {
     setPersons(prev => prev.filter(p => p.id !== id))
@@ -254,22 +275,95 @@ export default function ReviewPage() {
 
   async function handleSave() {
     setStage('saving')
+
+    // 두 모드 공통: payload 조립
+    const buildPayload = (rec: MinimalPersonData) => {
+      const bd = rec.birthDate
+      const saju = sydtoso24yd(bd.year, bd.month, bd.day, bd.hour, bd.minute)
+      const dayPillarHanja   = ganji[saju.so24day]
+      const monthPillarHanja = ganji[saju.so24month]
+      const additionalDates = (rec.additionalDates ?? []).map(ad => {
+        const adSaju = sydtoso24yd(ad.year, ad.month, ad.day, bd.hour, bd.minute)
+        return { ...ad, dayPillar: ganji[adSaju.so24day], monthPillar: ganji[adSaju.so24month] }
+      })
+      return {
+        ...rec,
+        createdAt: new Date().toISOString(),
+        createdBy,
+        createdByNickname,
+        birthDate: { ...bd, dayPillar: dayPillarHanja, monthPillar: monthPillarHanja },
+        additionalDates,
+        occupation: rec.occupation ?? '',
+        deathReason: rec.deathReason ?? '',
+        isPrivate: false,
+        birthPlace: rec.birthPlace ?? '',
+        referenceLinks: [] as string[],
+        notes: rec.notes ?? '',
+      }
+    }
+
+    /** 서버 splitPersonData()와 동일한 필드 분리 */
+    const splitPersonPayload = (p: Record<string, unknown>) => ({
+      person_basic: {
+        id: p.id,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+        createdBy: p.createdBy,
+        createdByNickname: p.createdByNickname,
+        name: p.name,
+        gender: p.gender,
+        occupation: p.occupation,
+        deathReason: p.deathReason,
+        keywords: p.keywords,
+        birthDate: p.birthDate,
+        additionalDates: p.additionalDates,
+        isPrivate: p.isPrivate === true,
+      },
+      person_detail: {
+        id: p.id,
+        birthPlace: p.birthPlace,
+        notes: p.notes,
+        referenceLinks: p.referenceLinks,
+        relationships: p.relationships,
+        familyMemberIds: p.familyMemberIds,
+      },
+    })
+
     if (saveMode === 'json') {
-      const blob = new Blob([JSON.stringify(persons, null, 2)], { type: 'application/json' })
+      const payloads = persons.map(p => splitPersonPayload(buildPayload(p) as unknown as Record<string, unknown>))
+      const blob = new Blob([JSON.stringify(payloads, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url
       a.download = `chasam-import-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json`
       a.click(); URL.revokeObjectURL(url)
-      setSaveResult({ success: persons.length, failed: 0, failedNames: [] })
+      setSaveResult({ success: persons.length, failed: 0, failedNames: [], mismatchNames: [] })
       setStage('done')
       return
     }
     const failedNames: string[] = []
+    const mismatchNames: string[] = []
     for (const rec of persons) {
-      const ok = await postPerson(rec as unknown as Record<string, unknown>)
-      if (!ok) failedNames.push(rec.name)
+      const payload = buildPayload(rec) as unknown as Record<string, unknown>
+      const ok = await postPerson(payload)
+      if (!ok) { failedNames.push(rec.name); continue }
+
+      // split 검증: 저장 직후 재조회 → deepEqual 비교
+      const savedFlat = await fetchPersonById(payload.id as string, createdBy)
+      if (savedFlat) {
+        const clientSplit = splitPersonPayload(payload)
+        const serverSplit = splitPersonPayload(savedFlat)
+        const hasDiff =
+          Object.keys(clientSplit.person_basic).some(k => !deepEqual(clientSplit.person_basic[k], serverSplit.person_basic[k])) ||
+          Object.keys(clientSplit.person_detail).some(k => !deepEqual(clientSplit.person_detail[k], serverSplit.person_detail[k]))
+        if (hasDiff) {
+          console.warn('[split 검증] 불일치:', rec.name)
+          mismatchNames.push(rec.name)
+        } else {
+          console.log('[split 검증] 일치 \u2705', rec.name)
+        }
+      }
     }
-    setSaveResult({ success: persons.length - failedNames.length, failed: failedNames.length, failedNames })
+    setSaveResult({ success: persons.length - failedNames.length, failed: failedNames.length, failedNames, mismatchNames })
     setStage('done')
   }
 
@@ -287,6 +381,16 @@ export default function ReviewPage() {
             <p className="text-sm mt-1">실패: <strong>{saveResult.failed}</strong>건 ({saveResult.failedNames.join(', ')})</p>
           )}
         </div>
+        {saveResult.mismatchNames.length === 0 && saveResult.success > 0 && (
+          <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-700">
+            생성된 json과 일치합니다.
+          </div>
+        )}
+        {saveResult.mismatchNames.length > 0 && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-3 text-sm text-yellow-700">
+            {'\u26a0\ufe0f'} split 불일치 ({saveResult.mismatchNames.length}건): {saveResult.mismatchNames.join(', ')}
+          </div>
+        )}
         <button onClick={() => navigate('/')} className="text-blue-600 underline text-sm">{'<-'} 처음부터 다시</button>
       </div>
     )
@@ -373,10 +477,13 @@ export default function ReviewPage() {
     { id: 'all' as FilterTab, label: '전체', count: persons.length },
     { id: 'warning' as FilterTab, label: '\u26a0\ufe0f 경고', count: warnings.length },
     { id: 'error' as FilterTab, label: '\u274c 오류 (제외)', count: errors.length },
-    { id: 'pairs' as FilterTab, label: '\uD83D\uDD17 쌍 감지', count: pairsInList.length },
+    { id: 'groups' as FilterTab, label: '그룹 병합', count: mergedGroups.length },
   ]
 
-  const filteredPersons = filterTab === 'warning' ? warnings : filterTab === 'all' ? persons : []
+  const sortFn = (a: MinimalPersonData, b: MinimalPersonData) => a.name.localeCompare(b.name, 'ko')
+  const displayPersons = sortByName ? [...persons].sort(sortFn) : persons
+  const displayWarnings = sortByName ? [...warnings].sort(sortFn) : warnings
+  const filteredPersons = filterTab === 'warning' ? displayWarnings : filterTab === 'all' ? displayPersons : []
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -393,11 +500,21 @@ export default function ReviewPage() {
         </button>
       </div>
 
-      <div className="flex gap-4 text-sm text-gray-500 flex-wrap">
-        <span>임포트 <strong className="text-gray-800">{batchResult.totalCount}</strong>건</span>
-        <span>·</span>
-        <span>저장 대상 <strong className="text-green-700">{persons.length}</strong>건</span>
-        {errors.length > 0 && <><span>·</span><span className="text-red-500">오류 제외 {errors.length}건</span></>}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex gap-4 text-sm text-gray-500 flex-wrap">
+          <span>임포트 <strong className="text-gray-800">{batchResult.totalCount}</strong>건</span>
+          <span>·</span>
+          <span>저장 대상 <strong className="text-green-700">{persons.length}</strong>건</span>
+          {errors.length > 0 && <><span>·</span><span className="text-red-500">오류 제외 {errors.length}건</span></>}
+        </div>
+        <button
+          onClick={() => setSortByName(p => !p)}
+          className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+            sortByName ? 'bg-blue-50 border-blue-400 text-blue-700 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'
+          }`}
+        >
+          {sortByName ? '이름순 정렬 중' : '이름순 정렬'}
+        </button>
       </div>
 
       <div className="flex gap-0 border-b">
@@ -441,33 +558,23 @@ export default function ReviewPage() {
             ))
         )}
 
-        {filterTab === 'pairs' && (
-          pairsInList.length === 0
-            ? <p className="px-4 py-8 text-center text-gray-400">감지된 쌍 없음</p>
-            : pairsInList.map(pair => (
-              <div key={pair.key} className="border-b last:border-0 px-4 py-4">
-                <p className="text-xs text-gray-500 mb-2">같은 사람으로 추정 (음력 중복 레코드)</p>
-                <div className="flex flex-wrap items-center gap-3">
-                  {pair.sRecord && persons.some(p => p.id === pair.sRecord!.id) && (
-                    <div className="text-sm">
-                      <strong>{pair.sRecord.name}</strong>
-                      <span className="ml-1 text-xs text-gray-400">(양력, 유지)</span>
-                    </div>
-                  )}
-                  {pair.lRecord && persons.some(p => p.id === pair.lRecord!.id) && (
-                    <>
-                      <span className="text-gray-300">--</span>
-                      <div className="text-sm">
-                        <strong>{pair.lRecord.name}</strong>
-                        <span className="ml-1 text-xs text-gray-400">(음력)</span>
-                      </div>
-                      <button
-                        onClick={() => deleteById(pair.lRecord!.id)}
-                        className="text-xs px-2.5 py-1 rounded bg-orange-50 text-orange-700 hover:bg-orange-100 border border-orange-200"
-                      >음력 삭제 (병합)</button>
-                    </>
-                  )}
+        {filterTab === 'groups' && (
+          mergedGroups.length === 0
+            ? <p className="px-4 py-8 text-center text-gray-400">병합된 그룹 없음</p>
+            : mergedGroups.map(g => (
+              <div key={g.representative.id} className="border-b last:border-0 px-4 py-3 bg-blue-50">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium">{g.representative.name}</span>
+                  <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
+                    {g.absorbed.length + 1}개 병합됨
+                  </span>
+                  <span className="text-xs text-gray-400">
+                    ({[g.representative.name, ...g.absorbed.map(a => a.name)].join(', ')})
+                  </span>
                 </div>
+                {g.representative.notes && (
+                  <p className="text-xs text-gray-500 mt-1 pl-1">{g.representative.notes}</p>
+                )}
               </div>
             ))
         )}

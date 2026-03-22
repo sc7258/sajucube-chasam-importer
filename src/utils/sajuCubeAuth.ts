@@ -84,6 +84,19 @@ export async function fetchPersonsByUser(phone: string): Promise<any[]> {
   }
 }
 
+export async function fetchPersonById(id: string, phone: string): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(`${API_BASE}/persons/${encodeURIComponent(id)}`, {
+      headers: { ...AUTH_HEADERS, 'X-User-Id': phone },
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    return (json.data ?? json.person ?? null) as Record<string, unknown> | null
+  } catch {
+    return null
+  }
+}
+
 /**
  * MinimalPersonData 1건을 saju-cube Edge Function으로 저장
  */

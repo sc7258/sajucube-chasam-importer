@@ -10,8 +10,11 @@ export default function ImportPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [parseError, setParseError] = useState<string | null>(null)
   const [createdBy, setCreatedBy] = useState('')
+  const [createdByNickname, setCreatedByNickname] = useState('')
+  const [isUserVerified, setIsUserVerified] = useState(false)
   const [batchResult, setBatchResult] = useState<BatchConversionResult | null>(null)
   const [rawRecords, setRawRecords] = useState<ChasamRecord[]>([])
+  const [sortByName, setSortByName] = useState(false)
 
   const processFile = useCallback(async (file: File) => {
     setParseError(null)
@@ -49,7 +52,7 @@ export default function ImportPage() {
       </div>
 
       {/* 사용자 ID */}
-      <UserIdInput value={createdBy} onChange={setCreatedBy} />
+      <UserIdInput value={createdBy} onChange={setCreatedBy} onNicknameChange={setCreatedByNickname} onValidChange={setIsUserVerified} />
 
       {/* 드래그앤드롭 */}
       <div
@@ -73,11 +76,21 @@ export default function ImportPage() {
       {batchResult && (
         <>
           {/* 요약 */}
-          <div className="flex gap-4 text-sm font-medium">
-            <span className="text-gray-600">총 <strong>{batchResult.totalCount}</strong>건</span>
-            <span className="text-green-600">✅ OK: {batchResult.okCount}</span>
-            <span className="text-yellow-600">⚠️ 경고: {batchResult.warningCount}</span>
-            <span className="text-red-600">❌ 오류: {batchResult.errorCount}</span>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex gap-4 text-sm font-medium">
+              <span className="text-gray-600">총 <strong>{batchResult.totalCount}</strong>건</span>
+              <span className="text-green-600">OK: {batchResult.okCount}</span>
+              <span className="text-yellow-600">경고: {batchResult.warningCount}</span>
+              <span className="text-red-600">오류: {batchResult.errorCount}</span>
+            </div>
+            <button
+              onClick={() => setSortByName(p => !p)}
+              className={`text-xs px-3 py-1.5 rounded border transition-colors ${
+                sortByName ? 'bg-blue-50 border-blue-400 text-blue-700 font-medium' : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'
+              }`}
+            >
+              {sortByName ? '이름순 정렬 중' : '이름순 정렬'}
+            </button>
           </div>
 
           {/* 테이블 */}
@@ -91,8 +104,11 @@ export default function ImportPage() {
                 </tr>
               </thead>
               <tbody>
-                {batchResult.results.map((r, i) => {
-                  const orig = rawRecords[i]
+                {(sortByName
+                  ? [...batchResult.results].sort((a, b) => a.data.name.localeCompare(b.data.name, 'ko'))
+                  : batchResult.results
+                ).map((r, i) => {
+                  const orig = rawRecords.find(rec => rec.name === r.data.name && String(rec.birthYear) === String(r.data.birthDate.year)) ?? rawRecords[i]
                   const bg = r.status === 'error' ? 'bg-red-50' : r.status === 'warning' ? 'bg-yellow-50' : ''
                   return (
                     <tr key={r.data.id} className={`border-b last:border-0 ${bg}`}>
@@ -120,10 +136,10 @@ export default function ImportPage() {
           </div>
 
           <div className="flex flex-col items-end gap-1">
-            {!createdBy.trim() && <p className="text-xs text-red-500">사용자 ID를 입력해야 다음 단계로 진행할 수 있습니다</p>}
+            {!isUserVerified && <p className="text-xs text-red-500">사용자 ID 확인 후 다음 단계로 진행할 수 있습니다</p>}
             <button
-              onClick={() => navigate('/review', { state: { batchResult, rawRecords, createdBy } })}
-              disabled={!createdBy.trim()}
+              onClick={() => navigate('/review', { state: { batchResult, rawRecords, createdBy, createdByNickname } })}
+              disabled={!isUserVerified}
               className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               다음 단계: 검토하기 →
