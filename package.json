@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "smoke:converter": "node ./scripts/run-converter-smoke.mjs",
+    "sample:summary": "node ./scripts/run-sample-summary.mjs"
   },
   "dependencies": {
     "react": "18.3.1",

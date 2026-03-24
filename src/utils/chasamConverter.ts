@@ -100,9 +100,10 @@ export interface PairGroup {
  * JSON 문자열을 파싱해 ChasamRecord[] 반환
  */
 export function parseChasamJson(jsonText: string): ChasamRecord[] {
+  const normalizedText = jsonText.replace(/^\uFEFF/, '')
   let parsed: unknown
   try {
-    parsed = JSON.parse(jsonText)
+    parsed = JSON.parse(normalizedText)
   } catch {
     throw new Error('유효하지 않은 JSON 파일입니다')
   }
@@ -146,7 +147,8 @@ function buildData(
   year: number, month: number, day: number,
   isLunar: boolean, createdBy: string,
   additionalDates: MinimalPersonData['additionalDates'],
-  notes?: string
+  notes?: string,
+  isLeapMonth = false
 ): MinimalPersonData {
   return {
     id: record.id,
@@ -154,9 +156,87 @@ function buildData(
     createdBy,
     name: record.name,
     gender: record.sex === 'M' ? 'male' : 'female',
-    birthDate: { year, month, day, hour: record.birthHour, minute: record.birthMinute, isLunar, isLeapMonth: false },
+    birthDate: { year, month, day, hour: record.birthHour, minute: record.birthMinute, isLunar, isLeapMonth },
     notes,
     additionalDates,
+  }
+}
+
+interface LunarCandidate {
+  year: number
+  month: number
+  day: number
+  isLeapMonth: boolean
+  iljuValid: boolean
+  calculatedIlju: string
+}
+
+function inferLunarSolarCandidate(record: ChasamRecord): { candidate?: LunarCandidate; warning?: string } {
+  const candidates: LunarCandidate[] = []
+
+  for (const isLeapMonth of [false, true]) {
+    try {
+      const solar = lunartosolar(record.birthYear, record.birthMonth, record.birthDay, isLeapMonth ? 1 : 0)
+      const { valid, calculatedIlju } = validateIlju(
+        solar.syear,
+        solar.smonth,
+        solar.sday,
+        record.birthHour,
+        record.birthMinute,
+        record.ilju,
+      )
+      candidates.push({
+        year: solar.syear,
+        month: solar.smonth,
+        day: solar.sday,
+        isLeapMonth,
+        iljuValid: valid,
+        calculatedIlju,
+      })
+    } catch {
+      continue
+    }
+  }
+
+  if (candidates.length === 0) {
+    return {
+      warning: `[${record.name}] 음력→양력 변환 실패: ${record.birthYear}.${record.birthMonth}.${record.birthDay}`,
+    }
+  }
+
+  const uniqueCandidates = candidates.filter((candidate, index, all) =>
+    index === all.findIndex(other =>
+      other.year === candidate.year &&
+      other.month === candidate.month &&
+      other.day === candidate.day &&
+      other.isLeapMonth === candidate.isLeapMonth,
+    )
+  )
+  const validMatches = uniqueCandidates.filter(candidate => candidate.iljuValid)
+
+  if (validMatches.length === 1) {
+    const picked = validMatches[0]
+    return {
+      candidate: picked,
+      warning: picked.isLeapMonth
+        ? `[${record.name}] 윤달 후보를 일주 검증으로 추론해 처리됨`
+        : undefined,
+    }
+  }
+
+  if (uniqueCandidates.length === 1) {
+    return {
+      candidate: uniqueCandidates[0],
+      warning: uniqueCandidates[0].isLeapMonth
+        ? `[${record.name}] 윤달 후보 1건으로 추론해 처리됨`
+        : undefined,
+    }
+  }
+
+  const nonLeapCandidate = uniqueCandidates.find(candidate => !candidate.isLeapMonth) ?? uniqueCandidates[0]
+  return {
+    candidate: nonLeapCandidate,
+    warning: `[${record.name}] 윤달 여부를 확정할 수 없어 ${nonLeapCandidate.isLeapMonth ? '윤달' : '평달'} 기준으로 처리됨, 수동 확인 필요`,
   }
 }
 
@@ -169,19 +249,27 @@ export function convertRecord(record: ChasamRecord, createdBy: string): Conversi
   let birthMonth = record.birthMonth
   let birthDay = record.birthDay
   let isLunar = false
+  let isLeapMonth = false
+  let iljuValid = false
+  let calculatedIlju = '계산 실패'
 
   if (record.birthdayType === 'L') {
     isLunar = true
-    try {
-      const solar = lunartosolar(record.birthYear, record.birthMonth, record.birthDay, 0)
-      birthYear = solar.syear; birthMonth = solar.smonth; birthDay = solar.sday
-    } catch {
-      warnings.push(`[${record.name}] 음력→양력 변환 실패: ${record.birthYear}.${record.birthMonth}.${record.birthDay}`)
+    const inferred = inferLunarSolarCandidate(record)
+    if (!inferred.candidate) {
+      if (inferred.warning) warnings.push(inferred.warning)
       return {
-        data: buildData(record, record.birthYear, record.birthMonth, record.birthDay, isLunar, createdBy, [], record.memo.trim() || undefined),
+        data: buildData(record, record.birthYear, record.birthMonth, record.birthDay, isLunar, createdBy, [], record.memo.trim() || undefined, false),
         warnings, iljuValid: false, originalIlju: record.ilju, calculatedIlju: '변환 실패', status: 'error',
       }
     }
+    birthYear = inferred.candidate.year
+    birthMonth = inferred.candidate.month
+    birthDay = inferred.candidate.day
+    isLeapMonth = inferred.candidate.isLeapMonth
+    iljuValid = inferred.candidate.iljuValid
+    calculatedIlju = inferred.candidate.calculatedIlju
+    if (inferred.warning) warnings.push(inferred.warning)
   } else if (record.birthdayType === 'N') {
     warnings.push(`[${record.name}] birthdayType 'N' 감지 — 양력으로 처리됨, 수동 확인 필요`)
   }
@@ -190,20 +278,24 @@ export function convertRecord(record: ChasamRecord, createdBy: string): Conversi
   if (!dateCalcResult.success || !dateCalcResult.dates) {
     warnings.push(`[${record.name}] 6개 명식 날짜 계산 실패: ${dateCalcResult.error ?? ''}`)
     return {
-      data: buildData(record, birthYear, birthMonth, birthDay, isLunar, createdBy, [], record.memo.trim() || undefined),
+      data: buildData(record, birthYear, birthMonth, birthDay, isLunar, createdBy, [], record.memo.trim() || undefined, isLeapMonth),
       warnings, iljuValid: false, originalIlju: record.ilju, calculatedIlju: '계산 실패', status: 'error',
     }
   }
 
   const additionalDates = dateCalcResult.dates.map(d => ({ label: d.label, year: d.year, month: d.month, day: d.day }))
   const notes = record.memo.trim() !== '' ? record.memo.trim() : undefined
-  const data = buildData(record, birthYear, birthMonth, birthDay, isLunar, createdBy, additionalDates, notes)
+  const data = buildData(record, birthYear, birthMonth, birthDay, isLunar, createdBy, additionalDates, notes, isLeapMonth)
 
-  const { valid: iljuValid, calculatedIlju } = validateIlju(
-    birthYear, birthMonth, birthDay, record.birthHour, record.birthMinute, record.ilju
-  )
+  if (record.birthdayType !== 'L') {
+    const iljuCheck = validateIlju(
+      birthYear, birthMonth, birthDay, record.birthHour, record.birthMinute, record.ilju
+    )
+    iljuValid = iljuCheck.valid
+    calculatedIlju = iljuCheck.calculatedIlju
+  }
   if (!iljuValid) {
-    warnings.push(`[${record.name}] 일주 불일치 — 원본: "${record.ilju}", 계산값: "${calculatedIlju}" (윤달 여부 확인)`)
+    warnings.push(`[${record.name}] 일주 불일치 — 원본: "${record.ilju}", 계산값: "${calculatedIlju}"${record.birthdayType === 'L' ? ' (윤달 여부 확인)' : ''}`)
   }
 
   return { data, warnings, iljuValid, originalIlju: record.ilju, calculatedIlju, status: warnings.length > 0 ? 'warning' : 'ok' }
@@ -293,8 +385,35 @@ export interface MergedGroup {
   absorbed: MinimalPersonData[]
 }
 
+function normalizeMergedNote(note: string): string {
+  return note
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join('\n')
+}
+
+function mergeVariantNotes(records: MinimalPersonData[]): string | undefined {
+  const noteSources = new Map<string, string[]>()
+
+  for (const record of records) {
+    const normalized = record.notes ? normalizeMergedNote(record.notes) : ''
+    if (!normalized) continue
+
+    const existingSources = noteSources.get(normalized) ?? []
+    if (!existingSources.includes(record.name)) existingSources.push(record.name)
+    noteSources.set(normalized, existingSources)
+  }
+
+  if (noteSources.size === 0) return undefined
+
+  return Array.from(noteSources.entries())
+    .map(([note, sources]) => `[${sources.join(', ')}] ${note}`)
+    .join('\n')
+}
+
 /**
- * variant 그룹을 자동 병합 — 대표 레코드(이름 가장 짧은 것) 유지, notes 합산
+ * variant 그룹을 자동 병합 — 대표 레코드(이름 가장 짧은 것) 유지, notes 병합
  * 반환: 병합 후 persons 목록 + 병합 그룹 정보
  */
 export function mergeVariants(
@@ -317,8 +436,7 @@ export function mergeVariants(
     if (variantMap.has(p.id)) {
       const variantIds = variantMap.get(p.id)!
       const absorbed = variantIds.map(id => byId.get(id)!).filter(Boolean)
-      const allNotes = [p.notes, ...absorbed.map(v => v.notes)].filter((n): n is string => !!n)
-      const mergedNotes = allNotes.length > 0 ? allNotes.join(' / ') : undefined
+      const mergedNotes = mergeVariantNotes([p, ...absorbed])
       const merged: MinimalPersonData = { ...p, notes: mergedNotes }
       persons.push(merged)
       groups.push({ representative: merged, absorbed })

@@ -2,3 +2,8 @@ node_modules
 dist
 .env
 .env.local
+
+# Local sample exports for importer verification
+sample-data/*.json
+sample-data/*.txt
+!sample-data/.gitkeep

@@ -123,6 +123,14 @@ export default function ImportPage() {
 
       {batchResult && (
         <>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+            <p className="font-medium">병합 검토 안내</p>
+            <p className="mt-1 text-blue-800">
+              차샘 앱은 같은 사람을 이름 변형, 양력/음력 기준, 본원/허본 계열로 여러 건 저장하는 경우가 있습니다.
+              saju-cube에는 중복 없이 정리된 person이 더 자연스러워서, 다음 단계에서 비슷한 자료를 병합 그룹으로 보여줍니다.
+            </p>
+          </div>
+
           {/* 요약 */}
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex gap-4 text-sm font-medium flex-wrap">

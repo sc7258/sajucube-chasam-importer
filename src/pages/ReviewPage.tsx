@@ -16,7 +16,27 @@ import { postPerson, fetchPersonById } from '@/utils/sajuCubeAuth'
 type FilterTab = 'all' | 'warning' | 'error' | 'groups'
 type Stage = 'list' | 'confirm' | 'saving' | 'done'
 type SaveMode = 'json' | 'supabase'
-interface SaveResult { success: number; failed: number; failedNames: string[]; mismatchNames: string[] }
+interface SaveRow {
+  id: string
+  name: string
+  birthDate: string
+  birthdayType: '양력' | '음력'
+  saveStatus: 'success' | 'failed'
+  verifyStatus: 'match' | 'mismatch' | 'not_applicable'
+  note: string
+}
+interface SaveResult {
+  success: number
+  failed: number
+  failedNames: string[]
+  mismatchNames: string[]
+  rows: SaveRow[]
+}
+interface SavingProgress {
+  current: number
+  total: number
+  currentName: string
+}
 
 /** 키 순서에 무관한 재귀 deep-equal */
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -33,6 +53,11 @@ function deepEqual(a: unknown, b: unknown): boolean {
   const bKeys = Object.keys(bObj).sort()
   if (aKeys.length !== bKeys.length) return false
   return aKeys.every((k, i) => bKeys[i] === k && deepEqual(aObj[k], bObj[k]))
+}
+
+function escapeCsv(value: string): string {
+  if (/[",\r\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
+  return value
 }
 
 // ── HOUR_OPTIONS ──────────────────────────────────────────────────────────────
@@ -244,6 +269,8 @@ export default function ReviewPage() {
   const [stage, setStage] = useState<Stage>('list')
   const [saveMode, setSaveMode] = useState<SaveMode>('json')
   const [saveResult, setSaveResult] = useState<SaveResult | null>(null)
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set())
+  const [savingProgress, setSavingProgress] = useState<SavingProgress>({ current: 0, total: 0, currentName: '' })
 
   const resultMap = useMemo(() => {
     const m = new Map<string, ConversionResult>()
@@ -273,97 +300,184 @@ export default function ReviewPage() {
     setEditingPerson(null)
   }
 
-  async function handleSave() {
-    setStage('saving')
+  const buildPayload = (rec: MinimalPersonData) => {
+    const bd = rec.birthDate
+    const saju = sydtoso24yd(bd.year, bd.month, bd.day, bd.hour, bd.minute)
+    const dayPillarHanja   = ganji[saju.so24day]
+    const monthPillarHanja = ganji[saju.so24month]
+    const additionalDates = (rec.additionalDates ?? []).map(ad => {
+      const adSaju = sydtoso24yd(ad.year, ad.month, ad.day, bd.hour, bd.minute)
+      return { ...ad, dayPillar: ganji[adSaju.so24day], monthPillar: ganji[adSaju.so24month] }
+    })
+    return {
+      ...rec,
+      createdAt: new Date().toISOString(),
+      createdBy,
+      createdByNickname,
+      birthDate: { ...bd, dayPillar: dayPillarHanja, monthPillar: monthPillarHanja },
+      additionalDates,
+      occupation: rec.occupation ?? '',
+      deathReason: rec.deathReason ?? '',
+      isPrivate: false,
+      birthPlace: rec.birthPlace ?? '',
+      referenceLinks: [] as string[],
+      notes: rec.notes ?? '',
+    }
+  }
 
-    // 두 모드 공통: payload 조립
-    const buildPayload = (rec: MinimalPersonData) => {
-      const bd = rec.birthDate
-      const saju = sydtoso24yd(bd.year, bd.month, bd.day, bd.hour, bd.minute)
-      const dayPillarHanja   = ganji[saju.so24day]
-      const monthPillarHanja = ganji[saju.so24month]
-      const additionalDates = (rec.additionalDates ?? []).map(ad => {
-        const adSaju = sydtoso24yd(ad.year, ad.month, ad.day, bd.hour, bd.minute)
-        return { ...ad, dayPillar: ganji[adSaju.so24day], monthPillar: ganji[adSaju.so24month] }
-      })
+  const splitPersonPayload = (p: Record<string, unknown>) => ({
+    person_basic: {
+      id: p.id,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+      createdBy: p.createdBy,
+      createdByNickname: p.createdByNickname,
+      name: p.name,
+      gender: p.gender,
+      occupation: p.occupation,
+      deathReason: p.deathReason,
+      keywords: p.keywords,
+      birthDate: p.birthDate,
+      additionalDates: p.additionalDates,
+      isPrivate: p.isPrivate === true,
+    },
+    person_detail: {
+      id: p.id,
+      birthPlace: p.birthPlace,
+      notes: p.notes,
+      referenceLinks: p.referenceLinks,
+      relationships: p.relationships,
+      familyMemberIds: p.familyMemberIds,
+    },
+  })
+
+  async function saveOneRecord(rec: MinimalPersonData): Promise<SaveRow> {
+    const payload = buildPayload(rec) as unknown as Record<string, unknown>
+    const birthDate = `${rec.birthDate.year}.${String(rec.birthDate.month).padStart(2, '0')}.${String(rec.birthDate.day).padStart(2, '0')}`
+    const birthdayType = rec.birthDate.isLunar ? '음력' : '양력'
+    const ok = await postPerson(payload)
+    if (!ok) {
       return {
-        ...rec,
-        createdAt: new Date().toISOString(),
-        createdBy,
-        createdByNickname,
-        birthDate: { ...bd, dayPillar: dayPillarHanja, monthPillar: monthPillarHanja },
-        additionalDates,
-        occupation: rec.occupation ?? '',
-        deathReason: rec.deathReason ?? '',
-        isPrivate: false,
-        birthPlace: rec.birthPlace ?? '',
-        referenceLinks: [] as string[],
-        notes: rec.notes ?? '',
+        id: rec.id,
+        name: rec.name,
+        birthDate,
+        birthdayType,
+        saveStatus: 'failed',
+        verifyStatus: 'not_applicable',
+        note: 'DB 저장 실패',
       }
     }
 
-    /** 서버 splitPersonData()와 동일한 필드 분리 */
-    const splitPersonPayload = (p: Record<string, unknown>) => ({
-      person_basic: {
-        id: p.id,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-        createdBy: p.createdBy,
-        createdByNickname: p.createdByNickname,
-        name: p.name,
-        gender: p.gender,
-        occupation: p.occupation,
-        deathReason: p.deathReason,
-        keywords: p.keywords,
-        birthDate: p.birthDate,
-        additionalDates: p.additionalDates,
-        isPrivate: p.isPrivate === true,
-      },
-      person_detail: {
-        id: p.id,
-        birthPlace: p.birthPlace,
-        notes: p.notes,
-        referenceLinks: p.referenceLinks,
-        relationships: p.relationships,
-        familyMemberIds: p.familyMemberIds,
-      },
-    })
+    const savedFlat = await fetchPersonById(payload.id as string, createdBy)
+    if (!savedFlat) {
+      return {
+        id: rec.id,
+        name: rec.name,
+        birthDate,
+        birthdayType,
+        saveStatus: 'success',
+        verifyStatus: 'not_applicable',
+        note: 'DB 저장 성공 / 재조회 실패',
+      }
+    }
+
+    const clientSplit = splitPersonPayload(payload)
+    const serverSplit = splitPersonPayload(savedFlat)
+    const hasDiff =
+      Object.keys(clientSplit.person_basic).some(k => !deepEqual(clientSplit.person_basic[k], serverSplit.person_basic[k])) ||
+      Object.keys(clientSplit.person_detail).some(k => !deepEqual(clientSplit.person_detail[k], serverSplit.person_detail[k]))
+
+    if (hasDiff) {
+      console.warn('[split 검증] 불일치:', rec.name)
+      return {
+        id: rec.id,
+        name: rec.name,
+        birthDate,
+        birthdayType,
+        saveStatus: 'success',
+        verifyStatus: 'mismatch',
+        note: 'DB 저장 성공 / split 불일치',
+      }
+    }
+
+    console.log('[split 검증] 일치 \u2705', rec.name)
+    return {
+      id: rec.id,
+      name: rec.name,
+      birthDate,
+      birthdayType,
+      saveStatus: 'success',
+      verifyStatus: 'match',
+      note: 'DB 저장 성공 / split 일치',
+    }
+  }
+
+  async function handleRetryFailed(id: string) {
+    const rec = persons.find(person => person.id === id)
+    if (!rec || !saveResult) return
+
+    setRetryingIds(prev => new Set(prev).add(id))
+    try {
+      const retriedRow = await saveOneRecord(rec)
+      setSaveResult(prev => {
+        if (!prev) return prev
+        const rows = prev.rows.map(row => row.id === id ? retriedRow : row)
+        const failedRows = rows.filter(row => row.saveStatus === 'failed')
+        const mismatchRows = rows.filter(row => row.saveStatus === 'success' && row.verifyStatus === 'mismatch')
+        return {
+          success: rows.filter(row => row.saveStatus === 'success').length,
+          failed: failedRows.length,
+          failedNames: failedRows.map(row => row.name),
+          mismatchNames: mismatchRows.map(row => row.name),
+          rows,
+        }
+      })
+    } finally {
+      setRetryingIds(prev => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }
+  }
+
+  async function handleSave() {
+    setStage('saving')
+    setSavingProgress({ current: 0, total: persons.length, currentName: saveMode === 'json' ? 'JSON 생성 준비' : '' })
 
     if (saveMode === 'json') {
+      const rows: SaveRow[] = persons.map(p => ({
+        id: p.id,
+        name: p.name,
+        birthDate: `${p.birthDate.year}.${String(p.birthDate.month).padStart(2, '0')}.${String(p.birthDate.day).padStart(2, '0')}`,
+        birthdayType: p.birthDate.isLunar ? '음력' : '양력',
+        saveStatus: 'success',
+        verifyStatus: 'not_applicable',
+        note: 'JSON 생성',
+      }))
       const payloads = persons.map(p => splitPersonPayload(buildPayload(p) as unknown as Record<string, unknown>))
       const blob = new Blob([JSON.stringify(payloads, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url
       a.download = `chasam-import-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json`
       a.click(); URL.revokeObjectURL(url)
-      setSaveResult({ success: persons.length, failed: 0, failedNames: [], mismatchNames: [] })
+      setSavingProgress({ current: persons.length, total: persons.length, currentName: 'JSON 생성 완료' })
+      setSaveResult({ success: persons.length, failed: 0, failedNames: [], mismatchNames: [], rows })
       setStage('done')
       return
     }
     const failedNames: string[] = []
     const mismatchNames: string[] = []
-    for (const rec of persons) {
-      const payload = buildPayload(rec) as unknown as Record<string, unknown>
-      const ok = await postPerson(payload)
-      if (!ok) { failedNames.push(rec.name); continue }
-
-      // split 검증: 저장 직후 재조회 → deepEqual 비교
-      const savedFlat = await fetchPersonById(payload.id as string, createdBy)
-      if (savedFlat) {
-        const clientSplit = splitPersonPayload(payload)
-        const serverSplit = splitPersonPayload(savedFlat)
-        const hasDiff =
-          Object.keys(clientSplit.person_basic).some(k => !deepEqual(clientSplit.person_basic[k], serverSplit.person_basic[k])) ||
-          Object.keys(clientSplit.person_detail).some(k => !deepEqual(clientSplit.person_detail[k], serverSplit.person_detail[k]))
-        if (hasDiff) {
-          console.warn('[split 검증] 불일치:', rec.name)
-          mismatchNames.push(rec.name)
-        } else {
-          console.log('[split 검증] 일치 \u2705', rec.name)
-        }
-      }
+    const rows: SaveRow[] = []
+    for (const [index, rec] of persons.entries()) {
+      setSavingProgress({ current: index, total: persons.length, currentName: rec.name })
+      const row = await saveOneRecord(rec)
+      setSavingProgress({ current: index + 1, total: persons.length, currentName: rec.name })
+      if (row.saveStatus === 'failed') failedNames.push(rec.name)
+      if (row.verifyStatus === 'mismatch') mismatchNames.push(rec.name)
+      rows.push(row)
     }
-    setSaveResult({ success: persons.length - failedNames.length, failed: failedNames.length, failedNames, mismatchNames })
+    setSaveResult({ success: persons.length - failedNames.length, failed: failedNames.length, failedNames, mismatchNames, rows })
     setStage('done')
   }
 
@@ -371,6 +485,29 @@ export default function ReviewPage() {
 
   if (stage === 'done' && saveResult) {
     const allOk = saveResult.failed === 0
+    const downloadCsv = () => {
+      const header = ['id', 'name', 'birthDate', 'birthdayType', 'saveStatus', 'verifyStatus', 'note']
+      const lines = [
+        header.join(','),
+        ...saveResult.rows.map(row => [
+          row.id,
+          row.name,
+          row.birthDate,
+          row.birthdayType,
+          row.saveStatus,
+          row.verifyStatus,
+          row.note,
+        ].map(value => escapeCsv(value)).join(',')),
+      ]
+      const csvText = `\uFEFF${lines.join('\r\n')}`
+      const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `chasam-save-result-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    }
     return (
       <div className="max-w-4xl mx-auto space-y-6">
         <h2 className="text-xl font-semibold">저장 완료</h2>
@@ -391,7 +528,31 @@ export default function ReviewPage() {
             {'\u26a0\ufe0f'} split 불일치 ({saveResult.mismatchNames.length}건): {saveResult.mismatchNames.join(', ')}
           </div>
         )}
-        <button onClick={() => navigate('/')} className="text-blue-600 underline text-sm">{'<-'} 처음부터 다시</button>
+        {saveResult.failed > 0 && (
+          <div className="border rounded-lg overflow-hidden">
+            <div className="bg-gray-50 border-b px-4 py-2 text-sm font-medium text-gray-700">실패 건 재시도</div>
+            {saveResult.rows.filter(row => row.saveStatus === 'failed').map(row => (
+              <div key={row.id} className="px-4 py-3 border-b last:border-0 flex items-center gap-3 flex-wrap">
+                <span className="font-medium">{row.name}</span>
+                <span className="text-xs text-gray-500">{row.birthDate}</span>
+                <span className="text-xs text-red-500">{row.note}</span>
+                <button
+                  onClick={() => handleRetryFailed(row.id)}
+                  disabled={retryingIds.has(row.id)}
+                  className="ml-auto text-xs px-3 py-1.5 rounded border border-gray-300 hover:border-blue-400 hover:text-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {retryingIds.has(row.id) ? '재시도 중...' : '재시도'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-4 flex-wrap">
+          <button onClick={downloadCsv} className="text-sm px-4 py-2 rounded-lg border border-gray-300 hover:border-blue-400 hover:text-blue-700 transition-colors">
+            저장 결과 CSV 다운로드
+          </button>
+          <button onClick={() => navigate('/')} className="text-blue-600 underline text-sm">{'<-'} 처음부터 다시</button>
+        </div>
       </div>
     )
   }
@@ -401,7 +562,12 @@ export default function ReviewPage() {
   if (stage === 'saving') {
     return (
       <div className="max-w-4xl mx-auto text-center py-20">
-        <p className="text-gray-500 text-lg animate-pulse">저장 중... ({persons.length}건)</p>
+        <p className="text-gray-500 text-lg animate-pulse">
+          저장 중... ({savingProgress.current} / {savingProgress.total}건)
+        </p>
+        {savingProgress.currentName && (
+          <p className="text-sm text-gray-400 mt-2">현재 처리: {savingProgress.currentName}</p>
+        )}
       </div>
     )
   }
@@ -563,9 +729,17 @@ export default function ReviewPage() {
         )}
 
         {filterTab === 'groups' && (
-          mergedGroups.length === 0
-            ? <p className="px-4 py-8 text-center text-gray-400">병합된 그룹 없음</p>
-            : mergedGroups.map(g => (
+          <>
+            <div className="border-b px-4 py-3 bg-blue-50/70">
+              <p className="text-sm font-medium text-blue-800">병합 기준 안내</p>
+              <p className="text-xs text-blue-700 mt-1">
+                이름 변형이 비슷하고 명식 날짜가 많이 겹치면 같은 사람 후보로 묶습니다. 음력/양력 차이나 윤달 인접 예외가 있으면
+                날짜가 완전히 같지 않아도 같은 그룹으로 볼 수 있습니다.
+              </p>
+            </div>
+            {mergedGroups.length === 0
+              ? <p className="px-4 py-8 text-center text-gray-400">병합된 그룹 없음</p>
+              : mergedGroups.map(g => (
               <div key={g.representative.id} className="border-b last:border-0 px-4 py-3 bg-blue-50">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium">{g.representative.name}</span>
@@ -577,10 +751,14 @@ export default function ReviewPage() {
                   </span>
                 </div>
                 {g.representative.notes && (
-                  <p className="text-xs text-gray-500 mt-1 pl-1">{g.representative.notes}</p>
+                  <div className="mt-2 rounded border border-blue-200 bg-white/70 px-2 py-2">
+                    <p className="text-[11px] font-medium text-blue-700">병합 메모</p>
+                    <p className="text-xs text-gray-600 mt-1 pl-1 whitespace-pre-line">{g.representative.notes}</p>
+                  </div>
                 )}
               </div>
-            ))
+            ))}
+          </>
         )}
       </div>
 

@@ -89,8 +89,10 @@ export interface MergedGroup {
 
 2. birthdayType 처리:
    - 'S': isLunar=false, 날짜 그대로 사용
-   - 'L': isLunar=true, lunartosolar() 호출
-          → 실패 시 status='error', warnings에 추가
+   - 'L': isLunar=true, 평달/윤달 후보를 모두 계산
+          → 원본 ilju와 더 잘 맞는 후보가 있으면 채택
+          → 확정이 어려우면 warning 추가
+          → 둘 다 실패 시 status='error'
    - 'N': isLunar=false, warnings에 "N타입 경고" 추가
 
 3. calculateAutoDates(year, month, day) 호출
@@ -98,7 +100,7 @@ export interface MergedGroup {
    → 실패 시 status='error'
 
 4. MinimalPersonData 조합
-   - 현재 `birthDate.isLeapMonth`는 `false`로 저장됨
+   - 음력 입력은 일부 케이스에서 `birthDate.isLeapMonth` 추론 가능
    - `record.memo`는 `notes`로 보존
 
 5. 일주 검증: validateIlju(data, record.ilju)
@@ -143,7 +145,8 @@ export interface MergedGroup {
 - `detectVariants()` 결과를 실제 저장/검토용 목록에 반영한다.
 - 대표 레코드는 유지하고 흡수 레코드는 목록에서 제외한다.
 - 병합 그룹 정보는 `ReviewPage`의 "그룹 병합" 탭에서 사용한다.
-- 현재 `notes`는 대표 + 흡수 레코드의 값을 모아 `' / '`로 이어붙인다.
+- `notes`는 대표 + 흡수 레코드 값을 모아 중복 제거 후 줄바꿈 병합한다.
+- 병합 형식은 `[이름] 메모내용` 이며, 같은 메모가 여러 레코드에 있으면 이름만 합쳐서 1회만 남긴다.
 
 ### `detectPairs(records: ChasamRecord[]): PairGroup[]`
 - 예전 S/L 쌍 감지 로직
