@@ -481,7 +481,11 @@ export default function ReviewPage() {
   ]
 
   const sortFn = (a: MinimalPersonData, b: MinimalPersonData) => a.name.localeCompare(b.name, 'ko')
-  const displayPersons = sortByName ? [...persons].sort(sortFn) : persons
+  const statusOrder = (p: MinimalPersonData) => {
+    const s = resultMap.get(p.id)?.status
+    return s === 'error' ? 0 : s === 'warning' ? 1 : 2
+  }
+  const displayPersons = sortByName ? [...persons].sort(sortFn) : [...persons].sort((a, b) => statusOrder(a) - statusOrder(b))
   const displayWarnings = sortByName ? [...warnings].sort(sortFn) : warnings
   const filteredPersons = filterTab === 'warning' ? displayWarnings : filterTab === 'all' ? displayPersons : []
 

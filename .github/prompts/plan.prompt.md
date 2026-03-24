@@ -174,6 +174,21 @@ description: "프로젝트 전체 로드맵 및 현재 Todo 확인"
 - [x] done 단계: 전체 일치 → 초록 "생성된 json과 일치합니다.", 불일치 → 노란 경고 + 이름 목록
 - [x] 빌드 성공 (235.70 kB)
 
+### Phase 24 — ImportPage/ReviewPage 기본 정렬 개선 + ImportPage 상단 버튼 ✅ (2026-03-22)
+- [x] `ImportPage`: 요약 행 오른쪽에 "다음 단계: 검토하기" 버튼 추가 (이름순 정렬 버튼과 나란히)
+- [x] `ImportPage`: 테이블 기본 정렬 → error=0, warning=1, ok=2 순
+- [x] `ReviewPage`: `displayPersons` 기본 정렬 → status 순 (sortByName OFF 시)
+- [x] 빌드 성공 (236.34 kB)
+
+### Phase 25 — ImportPage 행 선택 기능 ✅ (2026-03-22)
+- [x] `selectedIds: Set<string>` 상태 추가, 파일 로드 시 전체 선택으로 초기화
+- [x] 헤더 체크박스: 전체선택/해제, indeterminate 지원
+- [x] 각 행에 체크박스 추가, 개별 선택/해제
+- [x] 요약 행에 "N건 선택" 표시
+- [x] "다음 단계" 버튼: 선택 건수 표시, 0건 선택 시 disabled
+- [x] navigate 시 선택 건만 필터링한 `BatchConversionResult` 전달
+- [x] 빌드 성공 (237.59 kB)
+
 ---
 
 ## 당장 해야 할 Todo
@@ -198,17 +213,33 @@ description: "프로젝트 전체 로드맵 및 현재 Todo 확인"
 - [x] **수동 입력 중복 저장 방지** ← 완료 (Phase 8)
 
 - [ ] **음력 윤달 처리 개선**
-  - 차샘 레코드에서 윤달 여부를 추론할 방법 탐색
-  - 현재 `isLeapMonth` 항상 false → 경고 추가 검토
+  - 차샘 레코드 또는 양력/음력 대응 관계로 윤달 여부를 추론할 수 있는지 확인
+  - 현재 `birthDate.isLeapMonth`가 사실상 항상 `false`
+  - 추론이 불가능하면 경고 문구 또는 수동 확인 안내 추가 검토
 
 ### Priority 3 — UX 개선
 
-- [ ] **S/L 쌍 레코드 자동 병합 제안**
-  - detectPairs()로 쌍 감지 후 어느 버전(양력/음력) 사용할지 자동 추천
-  - 현재: 사용자가 수동으로 탭에서 선택
+- [x] **Codex용 AGENTS.md 추가**
+  - 루트 `AGENTS.md` 생성
+  - `.github/instructions/*.md`, `.github/prompts/plan.prompt.md`를 기준 문서로 안내
+
+- [x] **specs 문서 현행화 + 테스트 시나리오 정리**
+  - `specs/`를 현재 구현 기준으로 업데이트
+  - 별도 테스트 시나리오 문서 추가로 검증 기준 명확화
+
+- [ ] **병합 그룹 설명/추천 개선**
+  - import 시 차샘 앱과 saju-cube 앱의 데이터 차이, 병합이 필요한 이유를 더 분명히 안내
+  - 현재 `detectVariants()` + `mergeVariants()` 흐름에 맞춰 병합 근거를 UI에 표시
+  - 필요 시 대표 레코드 추천 근거(이름, 날짜 겹침, 윤달 예외 등) 문구 추가 검토
+
+- [ ] **병합 시 메모/노트 merge 품질 개선**
+  - 현재는 `notes`를 `' / '`로 단순 연결
+  - 중복 제거, 줄바꿈 정리, 출처 표시 여부 검토
+  - 병합 그룹 UI에서 합쳐진 메모라는 점을 더 명확히 표시
 
 - [ ] **저장 결과 CSV 내보내기**
   - 성공/실패 내역을 CSV로 다운로드
+  - 저장 결과, 실패 사유, 검증 mismatch 여부 등을 표 형태로 내려받을 수 있게 검토
   - 현재: JSON 다운로드만 지원
 
 ---

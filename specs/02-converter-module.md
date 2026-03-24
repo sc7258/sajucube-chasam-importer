@@ -4,11 +4,12 @@
 
 `src/utils/chasamConverter.ts`
 
-## 의존 함수 (saju-cube에서 복사한 파일들)
+## 의존 함수
 
 | 함수 | 출처 파일 |
 |---|---|
 | `lunartosolar(year, month, day, isLeap)` | `src/utils/calculationModule.ts` |
+| `solortolunar(year, month, day)` | `src/utils/calculationModule.ts` |
 | `calculateAutoDates(year, month, day)` | `src/utils/dateCalculation.ts` |
 | `sydtoso24yd(year, month, day, hour, min)` | `src/utils/calculationModule.ts` |
 
@@ -52,21 +53,39 @@ export interface BatchConversionResult {
 }
 ```
 
+## 현재 핵심 타입
+
+```typescript
+export interface PairGroup {
+  key: string;
+  sRecord?: ChasamRecord;
+  lRecord?: ChasamRecord;
+  isSingleS: boolean;
+  isSingleL: boolean;
+  isPair: boolean;
+}
+
+export interface MergedGroup {
+  representative: MinimalPersonData;
+  absorbed: MinimalPersonData[];
+}
+```
+
 ## 함수 명세
 
 ### `parseChasamJson(jsonText: string): ChasamRecord[]`
 - JSON 문자열을 파싱해 `ChasamRecord[]` 반환
 - 유효하지 않은 JSON → `Error("유효하지 않은 JSON 파일입니다")` throw
-- 배열이 아닌 경우 → `Error("JSON 최상위가 배열이어야 합니다")` throw
-- 각 레코드의 필수 필드(`id`, `name`, `sex`, `birthYear`) 없을 시 해당 레코드 건너뜀 + 경고
+- 최상위가 배열이 아니면 → `Error("JSON 최상위가 배열이어야 합니다")` throw
+- 필수 필드가 없는 항목은 건너뛰고 유효한 레코드만 반환
 
 ---
 
 ### `convertRecord(record: ChasamRecord, createdBy: string): ConversionResult`
-1건 변환. 내부 흐름:
+차샘 1건을 `MinimalPersonData`로 변환한다.
 
 ```
-1. gender 변환: 'M'→'male', 'F'→'female'
+1. 성별 변환: 'M'→'male', 'F'→'female'
 
 2. birthdayType 처리:
    - 'S': isLunar=false, 날짜 그대로 사용
@@ -79,6 +98,8 @@ export interface BatchConversionResult {
    → 실패 시 status='error'
 
 4. MinimalPersonData 조합
+   - 현재 `birthDate.isLeapMonth`는 `false`로 저장됨
+   - `record.memo`는 `notes`로 보존
 
 5. 일주 검증: validateIlju(data, record.ilju)
    → 불일치 시 status='warning', warnings에 추가
@@ -90,43 +111,53 @@ export interface BatchConversionResult {
 
 ### `convertBatch(records: ChasamRecord[], createdBy: string): BatchConversionResult`
 - `records.map(r => convertRecord(r, createdBy))` 후 집계
-- 통계 계산: totalCount, okCount, warningCount, errorCount
+- 통계 계산: `totalCount`, `okCount`, `warningCount`, `errorCount`
 
 ---
 
-### `validateIlju(data: MinimalPersonData, expectedIlju: string): boolean`
+### `validateIlju(year, month, day, hour, minute, expectedIlju)`
 일주 검증:
 1. `sydtoso24yd(year, month, day, hour, minute)` 호출
 2. `so24day` 인덱스 → `ganji[so24day]` (60갑자 배열에서 일주 추출)
 3. `ganji[index]`를 한글로 변환 (간지 → 한글 대조표 사용)
 4. `expectedIlju`와 비교 → 일치하면 `true`
 
-> 간지 한글 대조표: 갑을병정무기경신임계 + 자축인묘진사오미신유술해
-> 예: 인덱스 2(丙辰) → "병진"
-
 ---
 
+### `stripVariantSuffix(name: string): string`
+- 이름 끝의 `++`, `+-`, `-+`, `--`, `정`, `본`, `허`, 숫자 suffix 등을 제거해 base name을 만든다.
+- 예: `홍길동++` → `홍길동`
+
+### `detectVariants(results: ConversionResult[]): Map<string, string[]>`
+- 현재 import 중복 판별의 핵심 함수
+- `status !== 'error'` 인 결과만 대상으로 한다.
+- 기준:
+  - base name 동일
+  - additionalDates 교집합이 4개 이상이면 같은 그룹
+  - 양력→음력 변환 시 윤달 인접(`lmoonyun === 1`)이면 날짜 교집합 대신 이름 기준으로 병합 허용
+- 반환:
+  - `Map<대표 id, 병합될 id[]>`
+  - 대표는 이름 길이가 가장 짧은 레코드
+
+### `mergeVariants(results, variantMap)`
+- `detectVariants()` 결과를 실제 저장/검토용 목록에 반영한다.
+- 대표 레코드는 유지하고 흡수 레코드는 목록에서 제외한다.
+- 병합 그룹 정보는 `ReviewPage`의 "그룹 병합" 탭에서 사용한다.
+- 현재 `notes`는 대표 + 흡수 레코드의 값을 모아 `' / '`로 이어붙인다.
+
 ### `detectPairs(records: ChasamRecord[]): PairGroup[]`
-S/L 쌍 감지:
-
-```typescript
-interface PairGroup {
-  key: string;           // 그룹 키 (이름 기반)
-  sRecord?: ChasamRecord;
-  lRecord?: ChasamRecord;
-  isSingleS: boolean;    // S만 있고 L 없음
-  isSingleL: boolean;    // L만 있고 S 없음
-  isPair: boolean;       // S+L 둘 다 있음
-}
-```
-
-감지 규칙:
-- 이름이 같고 one은 S, 다른 one는 L → 쌍
-- 이름 + "2", 이름 + "+", 이름 + "-" suffix 패턴도 같은 사람으로 감지
-- 쌍으로 감지된 경우 S 레코드를 `본원`으로 처리
+- 예전 S/L 쌍 감지 로직
+- 현재 주요 UI 흐름은 `detectVariants()` + `mergeVariants()` 쪽이 중심이다.
+- 기존 이름 기반 쌍 감지 규칙을 참고할 때만 사용한다.
 
 ## 에러 처리 원칙
 
 - 개별 레코드 변환 실패 → throw하지 않고 `status: 'error'`로 반환
 - 전체 파싱 실패만 throw
 - 모든 경고는 한국어로 작성
+
+## 구현과 문서가 자주 어긋나는 포인트
+
+- `detectPairs()` 설명만 보고 현재 UI를 이해하면 안 된다.
+- 현재 병합 UX는 "쌍 선택"이 아니라 "그룹 병합" 기준이다.
+- 윤달 처리 개선은 아직 완료되지 않았으므로 `isLeapMonth`를 신뢰하면 안 된다.
